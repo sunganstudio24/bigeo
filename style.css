@@ -180,8 +180,8 @@ html, body {
 
 /* ----- 도전 모드 소개 ----- */
 .intro-bubble { left: 12rem; width: 32rem; min-height: 6.6rem; font-size: 1.8rem; }
-.intro-bubble.first { top: 3rem; }
-.intro-bubble.second { top: 12rem; }
+.intro-bubble.first { top: 4.4rem; }
+.intro-bubble.second { top: 12.6rem; }
 
 /* ----- 부품 모으기 ----- */
 #ui.collecting { touch-action: none; }
@@ -213,6 +213,48 @@ html, body {
 .bag-slot span { font-size: 1.2rem; font-weight: 800; line-height: 1.2; }
 .done-btn { left: 34.5rem; top: 22.95rem; width: 12.6rem; min-height: 3.8rem; font-size: 1.7rem; }
 .timeup-bubble { left: 18.6rem; top: 8.2rem; width: 19.4rem; font-size: 1.8rem; min-height: 8.6rem; }
+
+/* 처음으로 버튼 */
+.home-btn {
+  position: absolute;
+  left: 0.4rem;
+  top: 0.4rem;
+  height: 2.8rem; /* 960px 화면에서 56px */
+  min-width: 7.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.6rem 0 0.35rem;
+  font: inherit;
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: var(--ink);
+  background: var(--paper);
+  border: 0.12rem solid var(--ink);
+  border-radius: 0.9rem;
+  cursor: pointer;
+  touch-action: manipulation;
+  white-space: nowrap;
+}
+.home-btn canvas { width: 1.8rem; height: 1.8rem; display: block; }
+.home-btn:active { transform: translateY(0.1rem); }
+
+/* 확인 창 */
+.confirm-back { position: absolute; inset: 0; background: rgba(47, 59, 69, 0.55); }
+.confirm-box { left: 12rem; top: 7rem; width: 24rem; height: 12rem; padding: 1.4rem; text-align: center; font-size: 2rem; font-weight: 800; line-height: 1.3; }
+.confirm-yes { left: 2rem; top: 7rem; width: 9.5rem; min-height: 3.6rem; }
+.confirm-no { left: 12.3rem; top: 7rem; width: 9.5rem; min-height: 3.6rem; }
+
+/* 부품 팝업 */
+.loot-popup { left: 13.5rem; top: 3.6rem; width: 21rem; height: 18.4rem; text-align: center; }
+.loot-popup canvas { display: block; width: 12rem; height: 8rem; margin: 0.8rem auto 0; }
+.loot-name { font-size: 1.9rem; font-weight: 900; line-height: 1.3; margin-top: 0.3rem; }
+.loot-take { left: 1rem; top: 13rem; width: 9.2rem; min-height: 3.8rem; }
+.loot-leave { left: 10.6rem; top: 13rem; width: 9.2rem; min-height: 3.8rem; font-size: 1.4rem; }
+
+/* 힌트 말풍선(지도를 가리지 않게 눌러도 통과) */
+.hint-bubble { left: 8rem; top: 20.2rem; width: 32rem; min-height: 2.6rem; padding: 0.3rem 0.8rem; font-size: 1.35rem; line-height: 1.3; pointer-events: none; }
+.hint-bubble::before { display: none; }
 
 /* ----- 부품이 모자랄 때 ----- */
 .noparts-bubble { left: 18rem; top: 6.4rem; width: 26rem; min-height: 8rem; font-size: 2rem; }
@@ -284,14 +326,11 @@ html, body {
 }
 .card:disabled { background: #e9e6df; border-color: #cfcabf; cursor: default; color: #77736a; }
 .card:disabled canvas { opacity: 0.45; }
-.trap-note {
+.state-note {
   position: absolute;
   left: 1.2rem;
   top: 12.2rem;
   width: 18.6rem;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
   padding: 0.15rem 0.6rem;
   background: #e9e6df;
   border: 0.12rem solid #9b968a;
@@ -301,16 +340,15 @@ html, body {
   font-weight: 700;
   line-height: 1.25;
 }
-.trap-note canvas { width: 2.4rem; height: 1.6rem; flex: none; opacity: 0.7; }
 .build-bubble { left: 6.4rem; top: 15.7rem; width: 13.8rem; min-height: 4.6rem; font-size: 1.3rem; padding: 0.5rem 0.8rem; }
 .fly-btn { left: 1.2rem; top: 21.5rem; width: 18.6rem; min-height: 4.6rem; }
 
 /* ----- 결과 ----- */
 .grade {
-  left: 1.2rem;
-  top: 0.8rem;
-  width: 20rem;
-  font-size: 2.6rem;
+  left: 9.1rem;
+  top: 0.7rem;
+  width: 12.3rem;
+  font-size: 2.2rem;
   font-weight: 900;
   line-height: 1.2;
 }
@@ -326,8 +364,9 @@ html, body {
 }
 .distance small { font-size: 3rem; font-weight: 800; margin-left: 0.4rem; }
 .result-bubble { left: 7rem; top: 10.8rem; width: 14rem; min-height: 8.6rem; font-size: 1.35rem; padding: 0.5rem 0.8rem; }
-.result-retry { left: 1.2rem; top: 22.2rem; width: 27rem; min-height: 4rem; }
-.result-quiz { left: 29rem; top: 22.2rem; width: 17.8rem; min-height: 4rem; }
+.result-retry { left: 1.2rem; top: 22.2rem; width: 20.6rem; min-height: 4rem; }
+.result-quiz { left: 22.2rem; top: 22.2rem; width: 9.6rem; min-height: 4rem; }
+.result-other { left: 32.2rem; top: 22.2rem; width: 14.6rem; min-height: 4rem; background: #9fd8d2; }
 
 /* 기록 막대 그래프 */
 .chart { left: 21.6rem; top: 0.8rem; width: 25.2rem; height: 20.6rem; padding: 0.6rem 0.8rem; }
@@ -391,9 +430,9 @@ html, body {
 }
 .challenge-bubble.ok { font-size: 2rem; font-weight: 800; }
 .challenge-bubble .extra { font-weight: 800; color: #a8432e; }
-.c-retry { left: 1.2rem; top: 22.2rem; width: 19.8rem; min-height: 4rem; }
-.c-quiz { left: 21.6rem; top: 22.2rem; width: 12.3rem; min-height: 4rem; }
-.c-home { left: 34.5rem; top: 22.2rem; width: 12.3rem; min-height: 4rem; }
+.c-retry { left: 1.2rem; top: 22.2rem; width: 17rem; min-height: 4rem; }
+.c-quiz { left: 18.6rem; top: 22.2rem; width: 9.6rem; min-height: 4rem; }
+.c-other { left: 28.6rem; top: 22.2rem; width: 18.2rem; min-height: 4rem; background: #9fd8d2; }
 
 /* ----- 퀴즈 ----- */
 .quiz-q {

@@ -135,18 +135,194 @@ function runAllCombos() {
 // =============================================================
 // 1-2. 도전 모드 규칙 (화면과 무관)
 // =============================================================
+// 시드 랜덤: 같은 시드면 항상 같은 순서 (mulberry32)
+function createRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// 내용물을 섞어서 HIDE_SPOTS 순서대로 돌려준다
+function shuffleLoot(seed) {
+  const rng = createRng(seed);
+  const pool = [];
+  for (const row of LOOT_TABLE) for (let i = 0; i < row.count; i++) pool.push(row.item);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool;
+}
+
+// 받침에 맞는 조사 고르기
+function josa(word, withFinal, withoutFinal) {
+  const code = word.charCodeAt(word.length - 1) - 0xAC00;
+  return code >= 0 && code <= 11171 && code % 28 > 0 ? withFinal : withoutFinal;
+}
+
+function placeName(areaId) { return MAP_PLACES.find(p => p.id === areaId).name; }
+
+// 이번 판 실제 배치에서 힌트를 만든다. spots: { id, area, kind, loot, opened, hint }
+function makeHint(spots, rng) {
+  const left = spots.filter(s => !s.opened && !s.hint);
+  if (left.length === 0) return { spotId: null, item: null, text: HINT_TEMPLATES.none };
+  const empties = left.filter(s => s.loot === 'empty');
+  const parts = left.filter(s => s.loot !== 'empty');
+  let chosen;
+  if (parts.length === 0 || (empties.length > 0 && rng() < CHALLENGE.hintEmptyChance)) {
+    chosen = empties[Math.floor(rng() * empties.length)];
+  } else {
+    const top = Math.min(...parts.map(s => ITEMS[s.loot].hintRank));
+    const best = parts.filter(s => ITEMS[s.loot].hintRank === top);
+    chosen = best[Math.floor(rng() * best.length)];
+  }
+  const place = placeName(chosen.area), spot = HIDE_SPOT_KINDS[chosen.kind];
+  if (chosen.loot === 'empty') {
+    return {
+      spotId: chosen.id, item: 'empty',
+      text: HINT_TEMPLATES.empty.replace('{place}', place).replace('{spot}', spot).replace('{은는}', josa(spot, '은', '는')),
+    };
+  }
+  const item = ITEMS[chosen.loot].name;
+  return {
+    spotId: chosen.id, item: chosen.loot,
+    text: HINT_TEMPLATES.found.replace('{place}', place).replace('{spot}', spot).replace('{item}', item).replace('{이가}', josa(item, '이', '가')),
+  };
+}
+
+// 벽·건물 충돌: 아요를 사각형으로 보고 단순 판정
+function isBlocked(x, y) {
+  const r = CHALLENGE.ayoRadius, a = CHALLENGE.walkArea;
+  if (x - r < a.x || x + r > a.x + a.w || y - r < a.y || y + r > a.y + a.h) return true;
+  for (const list of [MAP_PLACES, MAP_DECOR, MAP_FENCES]) {
+    for (const p of list) {
+      if (p.solid === false) continue;
+      if (x + r > p.x && x - r < p.x + p.w && y + r > p.y && y - r < p.y + p.h) return true;
+    }
+  }
+  return false;
+}
+
+// ----- 길찾기: 칸으로 나눈 지도에서 A*, 눌렀을 때만 계산 -----
+let walkGridCache = null;
+function walkGrid() {
+  if (walkGridCache) return walkGridCache;
+  const a = CHALLENGE.walkArea, g = CHALLENGE.gridCell;
+  const cols = Math.floor(a.w / g), rows = Math.floor(a.h / g);
+  const free = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    free[r * cols + c] = isBlocked(a.x + (c + 0.5) * g, a.y + (r + 0.5) * g) ? 0 : 1;
+  }
+  walkGridCache = { cols, rows, free, g, x0: a.x, y0: a.y };
+  return walkGridCache;
+}
+
+function nearestFreeCell(G, x, y) {
+  const c0 = clamp(Math.floor((x - G.x0) / G.g), 0, G.cols - 1);
+  const r0 = clamp(Math.floor((y - G.y0) / G.g), 0, G.rows - 1);
+  for (let d = 0; d < Math.max(G.cols, G.rows); d++) {
+    let best = -1, bestD = Infinity;
+    for (let r = r0 - d; r <= r0 + d; r++) for (let c = c0 - d; c <= c0 + d; c++) {
+      if (r < 0 || c < 0 || r >= G.rows || c >= G.cols || !G.free[r * G.cols + c]) continue;
+      const dist = Math.hypot(c - c0, r - r0);
+      if (dist < bestD) { bestD = dist; best = r * G.cols + c; }
+    }
+    if (best >= 0) return best;
+  }
+  return -1;
+}
+
+function segmentClear(a, b) {
+  const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 8);
+  for (let i = 1; i <= n; i++) {
+    if (isBlocked(a.x + (b.x - a.x) * i / n, a.y + (b.y - a.y) * i / n)) return false;
+  }
+  return true;
+}
+
+// from에서 to까지 지나갈 점들을 돌려준다(to가 막힌 곳이면 가장 가까운 빈 곳까지)
+function findPath(from, to) {
+  const end = isBlocked(to.x, to.y) ? null : to;
+  if (end && segmentClear(from, end)) return [{ x: end.x, y: end.y }];
+  const G = walkGrid(), { cols, rows } = G;
+  const center = i => ({ x: G.x0 + (i % cols + 0.5) * G.g, y: G.y0 + (Math.floor(i / cols) + 0.5) * G.g });
+  const start = nearestFreeCell(G, from.x, from.y), goal = nearestFreeCell(G, to.x, to.y);
+  if (start < 0 || goal < 0) return [];
+  const cost = new Float32Array(cols * rows).fill(Infinity);
+  const prev = new Int32Array(cols * rows).fill(-1);
+  const closed = new Uint8Array(cols * rows);
+  const open = [start];
+  cost[start] = 0;
+  const gx = goal % cols, gy = Math.floor(goal / cols);
+  const guess = i => Math.hypot(i % cols - gx, Math.floor(i / cols) - gy);
+  while (open.length) {
+    let at = 0;
+    for (let k = 1; k < open.length; k++) if (cost[open[k]] + guess(open[k]) < cost[open[at]] + guess(open[at])) at = k;
+    const i = open[at];
+    open[at] = open[open.length - 1]; open.pop();
+    if (i === goal) break;
+    if (closed[i]) continue;
+    closed[i] = 1;
+    const c = i % cols, r = Math.floor(i / cols);
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      if (!dr && !dc) continue;
+      const nc = c + dc, nr = r + dr;
+      if (nc < 0 || nr < 0 || nc >= cols || nr >= rows) continue;
+      const n = nr * cols + nc;
+      if (!G.free[n] || closed[n]) continue;
+      if (dr && dc && (!G.free[r * cols + nc] || !G.free[nr * cols + c])) continue; // 모서리 끼어들기 금지
+      const nextCost = cost[i] + (dr && dc ? Math.SQRT2 : 1);
+      if (nextCost < cost[n]) { cost[n] = nextCost; prev[n] = i; open.push(n); }
+    }
+  }
+  if (goal !== start && prev[goal] < 0) return [];
+  const cells = [];
+  for (let i = goal; i >= 0; i = prev[i]) cells.unshift(center(i));
+  const pts = [{ x: from.x, y: from.y }, ...cells];
+  if (end) pts.push({ x: end.x, y: end.y });
+  // 직선으로 갈 수 있는 점은 건너뛴다
+  const out = [];
+  for (let i = 0; i < pts.length - 1;) {
+    let j = pts.length - 1;
+    while (j > i + 1 && !segmentClear(pts[i], pts[j])) j--;
+    out.push(pts[j]);
+    i = j;
+  }
+  return out;
+}
+
+function pathLength(from, to) {
+  let len = 0, at = from;
+  for (const p of findPath(from, to)) { len += Math.hypot(p.x - at.x, p.y - at.y); at = p; }
+  return len;
+}
+
 // 가방 내용(['bamboo', 'paper', ...])을 조립에 쓸 수 있는 정보로 바꾼다
-function partsFromBag(bag) {
+function partsFromBag(bag, empties = 0) {
   const items = bag.filter(Boolean);
-  const paper = items.filter(t => ITEMS[t].use === 'wing').length;
+  const count = t => items.filter(x => x === t).length;
+  const torn = items.filter(t => ITEMS[t].torn).length;
+  const clean = items.filter(t => ITEMS[t].use === 'wing' && !ITEMS[t].torn).length;
+  const paper = clean + torn * STATE_EFFECT.tornPaperValue;
   const bodies = [...new Set(items.filter(t => ITEMS[t].use === 'body').map(t => ITEMS[t].bodyKey))];
-  const traps = [...new Set(items.filter(t => ITEMS[t].use === 'trap'))];
   const hasString = items.some(t => ITEMS[t].use === 'string');
-  return { paper, bodies, traps, hasString, canBuild: paper > 0 && bodies.length > 0 };
+  // 튼튼한 대나무가 있으면 그것을 쓰고, 금 간 대나무만 있을 때 흔들린다
+  const crackedOnly = count('crackedBamboo') > 0 && count('bamboo') === 0;
+  const minNeed = Math.min(...Object.values(CHALLENGE.wingNeedPaper));
+  return { paper, torn, bodies, hasString, crackedOnly, empties, canBuild: paper >= minNeed && bodies.length > 0 };
 }
 
 function wingUnlocked(parts, wingKey) { return parts.paper >= CHALLENGE.wingNeedPaper[wingKey]; }
-function liftScaleOf(parts) { return parts.hasString ? 1 : CHALLENGE.noStringLift; }
+function usesCracked(parts, pick) { return parts.crackedOnly && pick.body === 'bamboo'; }
+
+// 들어 올리는 힘 배율: 끈 없음과 금 간 대나무가 겹치면 함께 곱한다
+function liftScaleOf(parts, pick) {
+  return (parts.hasString ? 1 : STATE_EFFECT.noStringLift) * (usesCracked(parts, pick) ? STATE_EFFECT.crackedBambooLift : 1);
+}
 
 // 무거운 물건 하나당 느려지고, 최소 속도 아래로는 내려가지 않는다
 function speedScaleOf(bag) {
@@ -158,37 +334,67 @@ function isChallengeSuccess(flight) { return !flight.crashed && flight.distance 
 
 // 도전 모드 피드백: 위에서 먼저 맞는 것 하나. 해당 없으면 null(기존 FEEDBACK만 사용)
 function challengeFeedbackKey(parts, pick) {
-  if (parts.traps.length > 0) return 'trap';
   if (pick.body === 'iron' && !parts.bodies.includes('bamboo')) return 'ironNoBamboo';
-  if (parts.paper <= 2) return 'littlePaper';
+  if (usesCracked(parts, pick)) return 'crackedBamboo';
+  if (parts.torn > 0) return 'tornPaper';
+  if (parts.empties >= 3) return 'manyEmpty';
+  if (parts.paper < CHALLENGE.wingNeedPaper.big) return 'littlePaper';
   if (!parts.hasString) return 'noString';
   return null;
 }
 
+// 여러 지점을 가장 짧게 도는 거리(출발점 0번, 칸 수가 적어서 전부 계산)
+function shortestTour(dist, stops) {
+  const n = stops.length, full = (1 << n) - 1;
+  const best = new Float64Array((1 << n) * n).fill(Infinity);
+  for (let i = 0; i < n; i++) best[(1 << i) * n + i] = dist[0][stops[i]];
+  for (let mask = 1; mask <= full; mask++) for (let i = 0; i < n; i++) {
+    const cur = best[mask * n + i];
+    if (cur === Infinity) continue;
+    for (let j = 0; j < n; j++) {
+      if (mask & (1 << j)) continue;
+      const k = (mask | (1 << j)) * n + j, v = cur + dist[stops[i]][stops[j]];
+      if (v < best[k]) best[k] = v;
+    }
+  }
+  let ans = Infinity;
+  for (let i = 0; i < n; i++) ans = Math.min(ans, best[full * n + i]);
+  return ans;
+}
+
 // 대표 가방 조합 검사 — 브라우저 콘솔에서 runChallengeCombos() 실행
 function runChallengeCombos() {
-  const P = 'paper', B = 'bamboo', Wd = 'wood', I = 'iron', S = 'string', J = 'jar', T = 'pot';
-  // bag: 가방, wing/body/ballast: 조립 선택, must: 'ok' 성공 / 'fail' 실패 / 'near' 성공 또는 목표 근처, fb: 기대 피드백
+  const B = 'bamboo', Cr = 'crackedBamboo', P = 'paper', Tp = 'tornPaper', Wd = 'wood', I = 'iron', S = 'string';
+  // must: 'ok' 성공 / 'fail' 실패 / 'near' 성공 또는 목표 근처 / 'cannot' 만들 수 없음, fb: 기대 피드백
   const cases = [
     { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'center', must: 'ok' },
     { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'front',  must: 'fail', fb: null },
     { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'back',   must: 'fail', fb: null },
-    { bag: [B, P, P, P, S],    wing: 'normal', body: 'bamboo', ballast: 'center', must: 'near' },
     { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'center', must: 'near' },
     { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'back',   must: 'fail', fb: 'littlePaper' },
-    { bag: [B, P, P, S, J],    wing: 'normal', body: 'bamboo', ballast: 'center', must: 'near' },
-    { bag: [B, P, P, J, T],    wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', fb: 'trap' },
-    { bag: [B, P, P, P, P],    wing: 'big',    body: 'bamboo', ballast: 'center', must: 'near' },
     { bag: [B, P, P, P],       wing: 'big',    body: 'bamboo', ballast: 'center', must: 'near' },
     { bag: [Wd, P, P, P],      wing: 'big',    body: 'wood',   ballast: 'center', must: 'fail', fb: 'noString' },
     { bag: [B, P, S],          wing: 'small',  body: 'bamboo', ballast: 'center', must: 'fail', fb: 'littlePaper' },
     { bag: [Wd, P, P, P, S],   wing: 'big',    body: 'wood',   ballast: 'center', must: 'fail', fb: null },
     { bag: [Wd, P, P, S],      wing: 'normal', body: 'wood',   ballast: 'center', must: 'fail', fb: 'littlePaper' },
+    { bag: [Wd, P, P, S],      wing: 'normal', body: 'wood',   ballast: 'center', must: 'fail', empties: 3, fb: 'manyEmpty' },
     { bag: [I, P, P, P, S],    wing: 'big',    body: 'iron',   ballast: 'center', must: 'fail', fb: 'ironNoBamboo' },
     { bag: [B, I, P, P, P],    wing: 'big',    body: 'iron',   ballast: 'center', must: 'fail', fb: 'noString' },
-    { bag: [I, J, T, P, P],    wing: 'normal', body: 'iron',   ballast: 'front',  must: 'fail', fb: 'trap' },
+    // 금 간 대나무
+    { bag: [Cr, P, P, P, S],   wing: 'big',    body: 'bamboo', ballast: 'center', must: 'near' },
+    { bag: [Cr, P, P, S],      wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', fb: 'crackedBamboo' },
+    { bag: [Cr, P, P, P],      wing: 'big',    body: 'bamboo', ballast: 'center', must: 'fail', fb: 'crackedBamboo' },
+    { bag: [Cr, P, P, P, S],   wing: 'big',    body: 'bamboo', ballast: 'back',   must: 'fail', fb: 'crackedBamboo' },
+    { bag: [B, Cr, P, P, P],   wing: 'big',    body: 'bamboo', ballast: 'center', must: 'near' }, // 튼튼한 대나무를 쓰므로 안 흔들림
+    // 찢어진 한지
+    { bag: [B, P, P, Tp, S],   wing: 'normal', body: 'bamboo', ballast: 'center', must: 'near', locked: 'big' }, // 2.5개 → 보통
+    { bag: [B, P, Tp, S],      wing: 'small',  body: 'bamboo', ballast: 'center', must: 'fail', locked: 'normal', fb: 'tornPaper' }, // 1.5개 → 작은
+    { bag: [B, P, P, Tp, S],   wing: 'normal', body: 'bamboo', ballast: 'front',  must: 'fail', fb: 'tornPaper' },
+    { bag: [Wd, P, P, P, Tp],  wing: 'big',    body: 'wood',   ballast: 'center', must: 'fail', fb: 'tornPaper' },
+    // 만들 수 없음
+    { bag: [B, Tp, S],         must: 'cannot' }, // 찢어진 한지만으로는 0.5개
     { bag: [P, P, P, S],       must: 'cannot' },
-    { bag: [B, S, J, T],       must: 'cannot' },
+    { bag: [B, S],             must: 'cannot' },
     { bag: [],                 must: 'cannot' },
   ];
   const label = bag => {
@@ -200,23 +406,24 @@ function runChallengeCombos() {
   for (const c of cases) {
     const name = label(c.bag);
     if (c.bag.length > BAG_SIZE) problems.push(`${name}: 가방 칸 초과`);
-    const parts = partsFromBag(c.bag);
+    const parts = partsFromBag(c.bag, c.empties || 0);
     if (c.must === 'cannot') {
       rows.push({ 가방: name, 조립: '-', '거리(m)': '-', 결과: '만들 수 없음', 피드백: '부품이 모자람' });
       if (parts.canBuild) problems.push(`${name}: 만들 수 없어야 함`);
       continue;
     }
     if (!parts.canBuild) { problems.push(`${name}: 만들 수 있어야 함`); continue; }
-    if (!wingUnlocked(parts, c.wing)) problems.push(`${name}: ${c.wing} 날개는 잠겨 있어야 함`);
+    if (!wingUnlocked(parts, c.wing)) problems.push(`${name}: ${c.wing} 날개가 잠겨 있음`);
+    if (c.locked && wingUnlocked(parts, c.locked)) problems.push(`${name}: ${c.locked} 날개는 잠겨 있어야 함`);
     if (!parts.bodies.includes(c.body)) problems.push(`${name}: ${c.body} 몸통 재료가 없음`);
-    const fl = simulateFlight(c.wing, c.body, c.ballast, liftScaleOf(parts));
-    const ok = isChallengeSuccess(fl);
     const pick = { wing: c.wing, body: c.body, ballast: c.ballast };
+    const fl = simulateFlight(c.wing, c.body, c.ballast, liftScaleOf(parts, pick));
+    const ok = isChallengeSuccess(fl);
     const extra = ok ? null : challengeFeedbackKey(parts, pick);
     rows.push({
-      가방: name,
-      조립: `${CONFIG.wings[c.wing].short}/${CONFIG.bodies[c.body].short}/${CONFIG.ballasts[c.ballast].short}${parts.hasString ? '' : '(끈 없음)'}`,
-      '거리(m)': fl.distance, 결과: ok ? '성공' : `실패(${GRADE_TEXT[fl.grade]})`,
+      가방: name + (c.empties ? ` (꽝 ${c.empties}번)` : ''),
+      조립: `${CONFIG.wings[c.wing].short}/${CONFIG.bodies[c.body].short}/${CONFIG.ballasts[c.ballast].short}`,
+      '힘 배율': +liftScaleOf(parts, pick).toFixed(2), '거리(m)': fl.distance, 결과: ok ? '성공' : `실패(${GRADE_TEXT[fl.grade]})`,
       피드백: ok ? 'success' : `${fl.feedback}${extra ? ' + ' + extra : ''}`,
     });
     if (c.must === 'ok' && !ok) problems.push(`${name}: 반드시 성공해야 함(${fl.distance}m)`);
@@ -225,21 +432,89 @@ function runChallengeCombos() {
     if ('fb' in c && !ok && extra !== c.fb) problems.push(`${name}: 피드백이 ${c.fb}여야 하는데 ${extra}`);
     if ((c.body === 'iron' || c.ballast === 'back') && ok) problems.push(`${name}: 쇠 몸통·뒤 무게추인데 성공`);
   }
-  // 쇠 몸통·뒤 무게추는 어떤 날개·끈이어도 실패
-  for (const wing of Object.keys(CONFIG.wings)) for (const scale of [1, CHALLENGE.noStringLift]) {
+  // 쇠 몸통·뒤 무게추는 어떤 조합이어도 실패
+  for (const wing of Object.keys(CONFIG.wings)) for (const scale of [1, 0.85, 0.7225]) {
     for (const body of Object.keys(CONFIG.bodies)) for (const ballast of Object.keys(CONFIG.ballasts)) {
       if ((body === 'iron' || ballast === 'back') && isChallengeSuccess(simulateFlight(wing, body, ballast, scale))) {
         problems.push(`${wing}/${body}/${ballast}: 반드시 실패해야 함`);
       }
     }
   }
-  // 이동 속도: 무거운 물건 0~4개
-  const speeds = [0, 1, 2, 3, 4].map(n => speedScaleOf(Array(n).fill('iron')));
-  [1, 0.8, 0.6, 0.4, 0.4].forEach((v, i) => { if (Math.abs(speeds[i] - v) > 0.001) problems.push(`무거운 물건 ${i}개 속도 ${speeds[i]}`); });
+  // 쇠 하나당 속도 20% 감소
+  if (Math.abs(speedScaleOf(['iron']) - 0.8) > 0.001) problems.push('쇠 속도 감소가 20%가 아님');
+
+  // ----- 배치 검사 -----
+  const lootTotal = LOOT_TABLE.reduce((n, r) => n + r.count, 0);
+  if (lootTotal !== HIDE_SPOTS.length) problems.push(`내용물 ${lootTotal}개, 숨김 장소 ${HIDE_SPOTS.length}곳: 수가 다름`);
+  const hideNames = new Set(HIDE_SPOTS.map(s => `${s.area}/${s.kind}`));
+  if (hideNames.size !== HIDE_SPOTS.length) problems.push('장소+종류 이름이 겹쳐서 힌트가 헷갈림');
+  const seedList = [1, 2, 3];
+  const layouts = seedList.map(shuffleLoot);
+  const seedRows = HIDE_SPOTS.map((s, i) => {
+    const row = { 장소: `${placeName(s.area)} ${HIDE_SPOT_KINDS[s.kind]}` };
+    seedList.forEach((seed, k) => { row[`시드 ${seed}`] = layouts[k][i] === 'empty' ? '꽝' : ITEMS[layouts[k][i]].name; });
+    return row;
+  });
+  if (new Set(layouts.map(l => l.join())).size !== seedList.length) problems.push('시드가 달라도 배치가 같음');
+  if (shuffleLoot(1).join() !== shuffleLoot(1).join()) problems.push('같은 시드인데 배치가 다름');
+
+  // 힌트는 항상 실제 배치와 일치
+  const hintSamples = [];
+  for (let seed = 1; seed <= 200; seed++) {
+    const rng = createRng(seed + 1000), loot = shuffleLoot(seed);
+    const spots = HIDE_SPOTS.map((s, i) => ({ ...s, loot: loot[i], opened: false, hint: null }));
+    for (let k = 0; k < VILLAGERS.length; k++) {
+      const h = makeHint(spots, rng);
+      const spot = spots.find(s => s.id === h.spotId);
+      if (!spot || spot.loot !== h.item) problems.push(`시드 ${seed}: 거짓 힌트 "${h.text}"`);
+      else spot.hint = h.item;
+      if (seed <= 2) hintSamples.push(h.text);
+    }
+  }
+
+  // ----- 시간 검사(걷기·뒤지기는 계산값, 팝업 판단 시간은 가정값) -----
+  const decisionSeconds = 1.5; // 부품 팝업에서 담기·두고 가기를 고르는 시간(가정)
+  const stands = [CHALLENGE.start, ...HIDE_SPOTS.map(s => ({ x: s.sx, y: s.sy }))];
+  stands.forEach((p, i) => { if (isBlocked(p.x, p.y)) problems.push(`${i}번 서는 자리가 막혀 있음`); });
+  for (const v of VILLAGERS) if (isBlocked(v.sx, v.sy)) problems.push(`${v.id} 서는 자리가 막혀 있음`);
+  const dist = stands.map(a => stands.map(b => pathLength(a, b)));
+  dist.forEach((row, i) => row.forEach((d, j) => { if (i !== j && d === 0) problems.push(`${i}→${j} 길이 없음`); }));
+  const allStops = HIDE_SPOTS.map((_, i) => i + 1);
+  const parts9 = LOOT_TABLE.filter(r => r.item !== 'empty').reduce((n, r) => n + r.count, 0);
+  const walkAll = shortestTour(dist, allStops) / CHALLENGE.walkSpeed;
+  const allSeconds = walkAll + HIDE_SPOTS.length * SEARCH_TIME + parts9 * decisionSeconds;
+  if (allSeconds < 80 || allSeconds > 90) problems.push(`전부 뒤지기 ${allSeconds.toFixed(1)}초(목표 80~90초)`);
+
+  // 위치를 다 안다고 할 때 최적 가방을 모으는 시간: 어떤 배치에서도 60초 안에 가능해야 함
+  let worst = 0, sum = 0;
+  const seedsChecked = 500;
+  for (let seed = 1; seed <= seedsChecked; seed++) {
+    const loot = shuffleLoot(seed);
+    const needAt = t => allStops.filter(i => loot[i - 1] === t);
+    let bestSec = Infinity;
+    const papers = needAt('paper');
+    const stops = [...needAt('bamboo'), ...needAt('string'), ...papers];
+    bestSec = shortestTour(dist, stops) / CHALLENGE.walkSpeed + 5 * (SEARCH_TIME + decisionSeconds);
+    worst = Math.max(worst, bestSec); sum += bestSec;
+  }
+  if (worst > TIME_LIMIT) problems.push(`최적 가방이 ${worst.toFixed(1)}초 걸리는 배치가 있음`);
+  const timing = {
+    '걷는 속도(px/s)': CHALLENGE.walkSpeed,
+    '맵 끝에서 끝까지(초)': +((CHALLENGE.walkArea.w - 2 * CHALLENGE.ayoRadius) / CHALLENGE.walkSpeed).toFixed(1),
+    '12곳 최단 걷기(초)': +walkAll.toFixed(1),
+    '뒤지기 합계(초)': HIDE_SPOTS.length * SEARCH_TIME,
+    '팝업 판단 합계(가정, 초)': parts9 * decisionSeconds,
+    '전부 뒤지기 합계(초)': +allSeconds.toFixed(1),
+    '최적 가방 평균(위치를 알 때, 초)': +(sum / seedsChecked).toFixed(1),
+    '최적 가방 최악(위치를 알 때, 초)': +worst.toFixed(1),
+  };
+
   console.table(rows);
+  console.table(seedRows);
+  console.table([timing]);
   if (problems.length) console.warn('문제 ' + problems.length + '건:\n' + problems.join('\n'));
   else console.log('도전 모드 조합 검사 통과');
-  return { rows, problems };
+  return { rows, problems, seedRows, timing, hintSamples };
 }
 
 // =============================================================
@@ -637,15 +912,21 @@ function renderCastleMap(c) {
   const a = CHALLENGE.walkArea;
   c.fillStyle = '#e4f2bd'; c.fillRect(a.x, a.y, a.w, a.h);
   c.strokeStyle = C.ink; c.lineWidth = 4; c.strokeRect(a.x, a.y, a.w, a.h);
-  c.fillStyle = '#f4e9c2'; c.fillRect(a.x + 2, 412, a.w - 4, 96); // 가운데 길
+  c.fillStyle = '#f4e9c2'; c.fillRect(a.x + 2, 410, a.w - 4, 110); // 가운데 길
+  for (const f of MAP_FENCES) { // 담장
+    c.fillStyle = '#c9a77c'; c.fillRect(f.x, f.y, f.w, f.h);
+    c.strokeStyle = C.ink; c.lineWidth = 3; c.strokeRect(f.x, f.y, f.w, f.h);
+  }
 
   for (const p of [...MAP_PLACES, ...MAP_DECOR]) renderPlace(c, p);
 }
 
 function renderPlace(c, p) {
-  roundBox(c, p.x, p.y, p.w, p.h, 18); fillStroke(c, p.color);
+  if (p.kind !== 'label') { roundBox(c, p.x, p.y, p.w, p.h, 18); fillStroke(c, p.color); }
   c.strokeStyle = C.ink; c.lineWidth = 3;
-  if (p.kind === 'forest') {           // 대나무 줄기
+  if (p.kind === 'label') {
+    // 이름표만
+  } else if (p.kind === 'forest') {           // 대나무 줄기
     c.lineWidth = 9; c.strokeStyle = '#5f9a4a'; c.lineCap = 'round';
     for (let x = p.x + 30; x < p.x + p.w - 10; x += 46) {
       c.beginPath(); c.moveTo(x, p.y + 16); c.lineTo(x, p.y + p.h - 16); c.stroke();
@@ -670,11 +951,15 @@ function renderPlace(c, p) {
 // 부품 아이콘 (원점이 가운데, 약 60px 크기)
 function drawItem(c, type, x, y, s) {
   c.save(); c.translate(x, y); c.scale(s, s);
-  if (type === 'bamboo') {
+  if (type === 'bamboo' || type === 'crackedBamboo') {
     c.rotate(0.25);
     roundBox(c, -9, -34, 18, 68, 6); fillStroke(c, '#7dbb5a', 3);
     c.strokeStyle = '#4c7f35'; c.lineWidth = 3;
     for (const yy of [-12, 12]) { c.beginPath(); c.moveTo(-9, yy); c.lineTo(9, yy); c.stroke(); }
+    if (type === 'crackedBamboo') { // 금 선
+      c.strokeStyle = '#2b2a26'; c.lineWidth = 3;
+      c.beginPath(); c.moveTo(-3, -30); c.lineTo(4, -20); c.lineTo(-4, -8); c.lineTo(5, 4); c.lineTo(-3, 16); c.lineTo(3, 30); c.stroke();
+    }
   } else if (type === 'wood') {
     roundBox(c, -34, -16, 68, 32, 5); fillStroke(c, C.wood, 3);
     c.strokeStyle = C.woodDark; c.lineWidth = 3;
@@ -683,9 +968,14 @@ function drawItem(c, type, x, y, s) {
     c.beginPath(); c.moveTo(-30, 18); c.lineTo(-22, -12); c.lineTo(4, -22); c.lineTo(28, -8); c.lineTo(32, 18); c.closePath();
     fillStroke(c, C.ironDark, 3);
     c.fillStyle = C.iron; c.beginPath(); c.moveTo(-14, -6); c.lineTo(4, -13); c.lineTo(10, -3); c.lineTo(-8, 4); c.closePath(); c.fill();
-  } else if (type === 'paper') {
+  } else if (type === 'paper' || type === 'tornPaper') {
     c.rotate(-0.08);
-    c.beginPath(); c.rect(-25, -28, 50, 56); fillStroke(c, '#ffffff', 3);
+    c.beginPath();
+    if (type === 'tornPaper') { // 찢어진 모서리
+      c.moveTo(-25, -28); c.lineTo(2, -28); c.lineTo(8, -18); c.lineTo(14, -12); c.lineTo(11, -2); c.lineTo(20, 4); c.lineTo(25, 2);
+      c.lineTo(25, 28); c.lineTo(-25, 28); c.closePath();
+    } else c.rect(-25, -28, 50, 56);
+    fillStroke(c, '#ffffff', 3);
     c.strokeStyle = C.wallDark; c.lineWidth = 3;
     c.beginPath(); c.moveTo(-16, -12); c.lineTo(16, -12); c.moveTo(-16, 4); c.lineTo(16, 4); c.stroke();
   } else if (type === 'string') {
@@ -694,14 +984,6 @@ function drawItem(c, type, x, y, s) {
     c.strokeStyle = C.ink; c.lineWidth = 12; curve();
     c.strokeStyle = '#f4cc3c'; c.lineWidth = 7; curve();
     c.lineCap = 'butt';
-  } else if (type === 'jar') {
-    c.beginPath(); c.moveTo(-12, -30); c.lineTo(12, -30); c.lineTo(10, -20); c.quadraticCurveTo(36, -6, 18, 30); c.lineTo(-18, 30); c.quadraticCurveTo(-36, -6, -10, -20); c.closePath();
-    fillStroke(c, '#6d4a2f', 3);
-  } else if (type === 'pot') {
-    c.beginPath(); c.moveTo(-38, -6); c.lineTo(38, -6); c.quadraticCurveTo(34, 30, 0, 30); c.quadraticCurveTo(-34, 30, -38, -6); c.closePath();
-    fillStroke(c, '#5a3c26', 3);
-    c.beginPath(); c.ellipse(0, -8, 28, 12, 0, Math.PI, 0); fillStroke(c, '#6d4a2f', 3);
-    circle(c, 0, -24, 6); fillStroke(c, '#6d4a2f', 3);
   }
   c.restore();
 }
@@ -722,6 +1004,63 @@ function renderRuler(c) {
   c.font = '700 46px system-ui, sans-serif';
   c.textAlign = 'left';
   c.fillText(TEXT.rulerUnit, 22, RULER_Y + 66);
+}
+
+// 숨김 장소 그림 (원점이 가운데, 약 80px 크기)
+function drawHideSpot(c, kind, opened) {
+  const dark = '#3f3026';
+  if (kind === 'box') {
+    if (opened) { c.save(); c.translate(-6, -30); c.rotate(-0.5); roundBox(c, -36, -9, 72, 16, 4); fillStroke(c, '#c49a68', 3); c.restore(); }
+    roundBox(c, -36, -18, 72, 54, 5); fillStroke(c, opened ? dark : C.wood, 3);
+    if (opened) { c.fillStyle = C.wood; c.fillRect(-34, 10, 68, 24); c.strokeStyle = C.ink; c.lineWidth = 3; c.strokeRect(-36, 10, 72, 26); }
+    else { c.strokeStyle = C.woodDark; c.lineWidth = 4; c.beginPath(); c.moveTo(-36, -2); c.lineTo(36, -2); c.moveTo(0, -2); c.lineTo(0, 36); c.stroke(); }
+  } else if (kind === 'straw') {
+    c.beginPath(); c.moveTo(-42, 32);
+    if (opened) { c.quadraticCurveTo(-30, 6, -10, 22); c.quadraticCurveTo(12, 4, 42, 32); }
+    else { c.quadraticCurveTo(-30, -36, 0, -36); c.quadraticCurveTo(30, -36, 42, 32); }
+    c.closePath(); fillStroke(c, '#e7c95f', 3);
+    c.strokeStyle = '#b8972f'; c.lineWidth = 3; c.beginPath();
+    for (const x of [-22, -8, 8, 22]) { c.moveTo(x, 28); c.lineTo(x * (opened ? 1.1 : 0.55), opened ? 18 : -16); }
+    c.stroke();
+    if (opened) { c.beginPath(); c.ellipse(2, 24, 16, 6, 0, 0, Math.PI * 2); c.fillStyle = dark; c.fill(); }
+  } else if (kind === 'basket') {
+    c.beginPath(); c.moveTo(-34, -6); c.lineTo(34, -6); c.lineTo(24, 34); c.lineTo(-24, 34); c.closePath(); fillStroke(c, '#d6b26f', 3);
+    c.strokeStyle = '#a07f3f'; c.lineWidth = 3; c.beginPath();
+    for (const yy of [6, 20]) { c.moveTo(-30, yy); c.lineTo(30, yy); }
+    for (const x of [-14, 0, 14]) { c.moveTo(x, -6); c.lineTo(x * 0.8, 34); }
+    c.stroke();
+    if (opened) {
+      c.beginPath(); c.ellipse(0, -6, 34, 9, 0, 0, Math.PI * 2); fillStroke(c, dark, 3);
+      c.save(); c.translate(36, -28); c.rotate(0.5); c.beginPath(); c.ellipse(0, 0, 26, 8, 0, 0, Math.PI * 2); fillStroke(c, '#d6b26f', 3); c.restore();
+    } else { c.beginPath(); c.ellipse(0, -8, 36, 13, 0, 0, Math.PI * 2); fillStroke(c, '#c9a35e', 3); }
+  } else { // jar 항아리, crock 장독
+    const crock = kind === 'crock', w = crock ? 42 : 32, top = crock ? 24 : 15;
+    c.beginPath(); c.moveTo(-top, -24); c.quadraticCurveTo(-w - 10, 4, -w * 0.6, 34); c.lineTo(w * 0.6, 34); c.quadraticCurveTo(w + 10, 4, top, -24); c.closePath();
+    fillStroke(c, crock ? '#6d4a2f' : '#8a5a36', 3);
+    if (opened) {
+      c.beginPath(); c.ellipse(0, -24, top, 7, 0, 0, Math.PI * 2); fillStroke(c, dark, 3);
+      c.save(); c.translate(top + 26, 24); c.rotate(0.3); c.beginPath(); c.ellipse(0, 0, top, 7, 0, 0, Math.PI * 2); fillStroke(c, '#a97f52', 3); c.restore();
+    } else {
+      c.beginPath(); c.ellipse(0, -26, top + 4, 9, 0, 0, Math.PI * 2); fillStroke(c, '#a97f52', 3);
+      circle(c, 0, -34, 5); fillStroke(c, '#a97f52', 2.5);
+    }
+  }
+}
+
+// 마을 사람: 단순한 사람 모양, 아직 이야기 안 했으면 말풍선
+function drawVillager(c, v, now) {
+  c.beginPath(); c.moveTo(v.x - 22, v.y + 36); c.lineTo(v.x - 15, v.y); c.lineTo(v.x + 15, v.y); c.lineTo(v.x + 22, v.y + 36); c.closePath();
+  fillStroke(c, v.color, 3);
+  circle(c, v.x, v.y - 14, 18); fillStroke(c, '#f5d7b0', 3);
+  c.fillStyle = C.ink;
+  circle(c, v.x - 6, v.y - 15, 2.5); c.fill(); circle(c, v.x + 6, v.y - 15, 2.5); c.fill();
+  if (!v.talked) {
+    const by = v.y - 66 + Math.sin(now / 350) * 3;
+    roundBox(c, v.x - 26, by - 18, 52, 34, 12); fillStroke(c, '#ffffff', 3);
+    c.beginPath(); c.moveTo(v.x - 6, by + 15); c.lineTo(v.x, by + 25); c.lineTo(v.x + 6, by + 15); c.closePath(); c.fillStyle = '#fff'; c.fill();
+    c.fillStyle = C.ink;
+    for (const dx of [-11, 0, 11]) { circle(c, v.x + dx, by, 3); c.fill(); }
+  }
 }
 
 function setBg(kind) {
@@ -768,7 +1107,39 @@ function go(name, arg) {
   ui.replaceChildren();
   ui.className = '';
   screens[name].enter(arg);
+  if (name !== 'title' && game.screen === name) ui.append(homeButton());
   game.dirty = true;
+}
+
+// 타이틀을 뺀 모든 화면 왼쪽 위의 [처음으로]
+function homeButton() {
+  const b = el('button', 'home-btn');
+  b.type = 'button';
+  const pic = el('canvas');
+  pic.width = 72; pic.height = 72;
+  const c = pic.getContext('2d');
+  c.beginPath(); c.moveTo(36, 8); c.lineTo(66, 36); c.lineTo(56, 36); c.lineTo(56, 64); c.lineTo(16, 64); c.lineTo(16, 36); c.lineTo(6, 36); c.closePath();
+  c.fillStyle = '#f28c38'; c.fill(); c.lineWidth = 5; c.lineJoin = 'round'; c.strokeStyle = '#3b3a36'; c.stroke();
+  c.fillStyle = '#3b3a36'; c.fillRect(29, 42, 14, 22);
+  b.append(pic, el('span', '', TEXT.home));
+  b.addEventListener('click', () => {
+    if (game.screen === 'collect') { b.blur(); screens.collect.askQuit(); }
+    else goHome();
+  });
+  return b;
+}
+
+// 다른 모드로 바로 간다
+function switchMode(mode) {
+  game.mode = mode;
+  game.history = [];
+  game.parts = null;
+  game.collect = null;
+  game.goodbye = false;
+  if (mode === 'challenge') { go('challengeIntro'); return; }
+  game.pick = { ...CONFIG.defaults };
+  game.isRetry = false;
+  go('build');
 }
 
 // 새 손님을 위해 판 기록과 선택을 비운다
@@ -906,6 +1277,7 @@ function partGroup(label, slot, table, drawFn, locked, tagOf) {
       game.pick[slot] = key;
       row.querySelectorAll('.card').forEach(b => b.setAttribute('aria-pressed', String(b === card)));
       game.dirty = true;
+      screens.build.refreshNotes();
     });
     row.append(card);
   }
@@ -918,27 +1290,44 @@ screens.build = {
     setBg('build');
     const panel = el('div', 'build-panel');
     const parts = game.mode === 'challenge' ? game.parts : null;
-    const needText = key => CHALLENGE_STORY.needPaper.replace('{n}', CHALLENGE.wingNeedPaper[key]);
+    const S = CHALLENGE_STORY;
+    const needText = key => S.needPaper.replace('{n}', CHALLENGE.wingNeedPaper[key]);
     panel.append(
       parts
-        ? partGroup(TEXT.wingLabel, 'wing', CONFIG.wings, drawWingCard, k => (wingUnlocked(parts, k) ? null : needText(k)), needText)
+        ? partGroup(S.wingLabelCount.replace('{n}', parts.paper), 'wing', CONFIG.wings, drawWingCard, k => (wingUnlocked(parts, k) ? null : needText(k)), needText)
         : partGroup(TEXT.wingLabel, 'wing', CONFIG.wings, drawWingCard),
       parts
-        ? partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard, k => (parts.bodies.includes(k) ? null : CHALLENGE_STORY.noMaterial))
+        ? partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard, k => (parts.bodies.includes(k) ? null : S.noMaterial),
+            k => (k === 'bamboo' && parts.crackedOnly ? S.crackedTag : CONFIG.bodies[k].tag))
         : partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard),
       partGroup(TEXT.ballastLabel, 'ballast', CONFIG.ballasts, drawBallastCard),
     );
     ui.append(panel);
-    let hello = game.isRetry ? TEXT.buildRetry : TEXT.buildHello;
-    if (parts) {
-      hello = parts.hasString ? CHALLENGE_STORY.buildHello : CHALLENGE_STORY.noString;
-      if (parts.traps.length) ui.append(trapNote(parts.traps));
-    }
-    ui.append(el('div', 'bubble build-bubble', hello));
+    this.bubble = el('div', 'bubble build-bubble');
+    this.note = el('div', 'state-note');
+    ui.append(this.note, this.bubble);
+    this.refreshNotes();
     ui.append(button('primary big fly-btn', TEXT.fly, () => go('flight')));
   },
-  // 끈이 없으면 날개가 흔들리는 모습을 계속 보여 준다
-  get animated() { return game.mode === 'challenge' && game.parts && !game.parts.hasString; },
+  // 고른 부품에 따라 안내를 바꾼다: 첫 안내는 하모 말풍선, 나머지는 회색 칸
+  refreshNotes() {
+    if (game.screen !== 'build') return;
+    const S = CHALLENGE_STORY;
+    if (game.mode !== 'challenge') {
+      this.bubble.textContent = game.isRetry ? TEXT.buildRetry : TEXT.buildHello;
+      this.note.hidden = true;
+      return;
+    }
+    const parts = game.parts, notes = [];
+    if (usesCracked(parts, game.pick)) notes.push(S.crackedNote);
+    if (parts.torn > 0) notes.push(S.tornNote);
+    if (!parts.hasString) notes.push(S.noString);
+    this.bubble.textContent = notes[0] || S.buildHello;
+    this.note.replaceChildren(...notes.slice(1).map(t => el('p', '', t)));
+    this.note.hidden = notes.length < 2;
+  },
+  // 흔들리는 조합이면 날개가 흔들리는 모습을 계속 보여 준다
+  get animated() { return game.mode === 'challenge' && game.parts && liftScaleOf(game.parts, game.pick) < 1; },
   draw(now) {
     drawBg();
     const wobble = this.animated ? Math.sin(now / 70) * 0.9 : 0;
@@ -946,19 +1335,6 @@ screens.build = {
     drawHamo(ctx, game.isRetry ? 'retry' : 'build', 130, 720, 220, 230);
   },
 };
-
-// 비거에 못 쓰는 물건 안내(회색)
-function trapNote(traps) {
-  const note = el('div', 'trap-note');
-  for (const t of traps) {
-    const pic = el('canvas');
-    pic.width = 96; pic.height = 64;
-    drawItem(pic.getContext('2d'), t, 48, 32, 0.8);
-    note.append(pic);
-  }
-  note.append(el('span', '', `${traps.map(t => ITEMS[t].name).join(', ')}: ${CHALLENGE_STORY.trapNote}`));
-  return note;
-}
 
 // ----- flight -----
 const READY_MS = 900, LAND_MS = 1700;
@@ -968,7 +1344,7 @@ screens.flight = {
     const challenge = game.mode === 'challenge';
     setBg(challenge ? 'flightChallenge' : 'flight');
     const p = game.pick;
-    game.flight = simulateFlight(p.wing, p.body, p.ballast, challenge ? liftScaleOf(game.parts) : 1);
+    game.flight = simulateFlight(p.wing, p.body, p.ballast, challenge ? liftScaleOf(game.parts, p) : 1);
     game.flightStart = performance.now();
     game.flightCursor = 0;
   },
@@ -1025,7 +1401,9 @@ screens.flight = {
       const simT = fl.simSeconds * (flyMs / playMs);
       const pos = this.sampleAt(simT);
       this.drawTrail(pos);
-      drawBigeo(ctx, game.pick, px(pos.x), py(pos.y), 0.62, pos.pitch, Math.sin(now / 90) * 0.5 + 0.5);
+      // 금 간 대나무나 끈이 없으면 비행 중에 흔들린다
+      const shake = fl.liftScale < 1 ? Math.sin(now / 55) : 0;
+      drawBigeo(ctx, game.pick, px(pos.x), py(pos.y) + shake * 5, 0.62, pos.pitch + shake * 7, Math.sin(now / 90) * 0.5 + 0.5);
       this.drawReadout(pos.x);
       return;
     }
@@ -1139,6 +1517,7 @@ screens.result = {
     ui.append(buildChart());
     ui.append(button('primary result-retry', TEXT.retry, () => { game.isRetry = true; go('build'); }));
     ui.append(button('result-quiz', TEXT.toQuiz, () => go('quiz')));
+    ui.append(button('result-other', TEXT.tryChallenge, () => switchMode('challenge')));
   },
   // 도전 모드 결과: 기존 결과 + 목표 안내 + 전용 피드백 + 버튼 3개
   enterChallenge(fl) {
@@ -1165,7 +1544,7 @@ screens.result = {
     ui.append(buildChart(true));
     ui.append(button('primary c-retry', S.retryFull, () => go('collect')));
     ui.append(button('c-quiz', TEXT.toQuiz, () => go('quiz')));
-    ui.append(button('c-home', TEXT.home, goHome));
+    ui.append(button('c-other', TEXT.tryEasy, () => switchMode('easy')));
   },
   draw() {
     drawBg();
@@ -1239,35 +1618,30 @@ screens.challengeIntro = {
   draw() {
     drawBg();
     ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 6;
-    roundBox(ctx, 120, 50, 1680, 760, 56); ctx.fill(); ctx.stroke();
+    roundBox(ctx, 120, 130, 1680, 690, 56); ctx.fill(); ctx.stroke();
     const [a, b] = CHALLENGE_STORY.intro;
-    drawHamo(ctx, a.hamo, 320, 250, 300, 310);
-    drawHamo(ctx, b.hamo, 320, 610, 300, 310);
+    drawHamo(ctx, a.hamo, 320, 305, 280, 280);
+    drawHamo(ctx, b.hamo, 320, 635, 280, 280);
   },
 };
 
 // ----- collect: 60초 부품 모으기 -----
+let roundCounter = 0;
 function newCollect() {
-  const items = [];
-  for (const type of Object.keys(ITEMS)) {
-    for (const [x, y] of ITEMS[type].spots) items.push({ type, x, y, immune: false });
-  }
+  const seed = CHALLENGE.fixedSeed !== null ? CHALLENGE.fixedSeed : (Date.now() + (++roundCounter) * 7919) >>> 0;
+  const loot = shuffleLoot(seed);
+  const now = performance.now();
   return {
-    phase: 'play', startMs: performance.now(), lastMs: performance.now(), endMs: 0,
-    ayo: { x: CHALLENGE.start.x, y: CHALLENGE.start.y }, target: null, moving: false,
-    items, bag: Array(BAG_SIZE).fill(null), keys: new Set(), toastUntil: 0, holding: false,
-    slots: [],
+    seed, phase: 'play', startMs: now, lastMs: now, endMs: 0,
+    rng: createRng(seed + 1000),
+    ayo: { x: CHALLENGE.start.x, y: CHALLENGE.start.y }, path: [], intent: null, moving: false,
+    spots: HIDE_SPOTS.map((s, i) => ({ ...s, loot: loot[i], opened: false, hint: null })),
+    villagers: VILLAGERS.map(v => ({ ...v, talked: false })),
+    loose: [],      // 바닥이나 열린 장소에 남아 있는 부품 { type, x, y, sx, sy }
+    bag: Array(BAG_SIZE).fill(null),
+    empties: 0, busy: null, popup: null, confirm: false, pauseAt: 0,
+    toast: null, hintUntil: 0, keys: new Set(), usedKeys: false, slots: [],
   };
-}
-
-// 벽·건물 충돌: 아요를 사각형으로 보고 단순 판정
-function isBlocked(x, y) {
-  const r = CHALLENGE.ayoRadius, a = CHALLENGE.walkArea;
-  if (x - r < a.x || x + r > a.x + a.w || y - r < a.y || y + r > a.y + a.h) return true;
-  for (const p of [...MAP_PLACES, ...MAP_DECOR]) {
-    if (x + r > p.x && x - r < p.x + p.w && y + r > p.y && y - r < p.y + p.h) return true;
-  }
-  return false;
 }
 
 screens.collect = {
@@ -1280,7 +1654,7 @@ screens.collect = {
     c.slots = c.bag.map((_, i) => {
       const slot = el('button', 'bag-slot');
       slot.type = 'button';
-      slot.addEventListener('click', () => this.drop(i));
+      slot.addEventListener('click', () => { this.drop(i); slot.blur(); });
       row.append(slot);
       return slot;
     });
@@ -1298,21 +1672,61 @@ screens.collect = {
         const pic = el('canvas');
         pic.width = 120; pic.height = 80;
         drawItem(pic.getContext('2d'), type, 60, 40, 1);
-        slot.append(pic, el('span', '', ITEMS[type].name));
+        slot.append(pic, el('span', '', ITEMS[type].short));
       } else slot.append(el('span', '', CHALLENGE_STORY.emptySlot));
     });
   },
-  // 가방 칸을 누르면 아요 자리에 내려놓는다. 멀어지기 전까지는 다시 줍지 않는다.
+  showToast(text) {
+    game.collect.toast = { text, until: performance.now() + CHALLENGE.toastSeconds * 1000 };
+  },
+  // 가방 칸을 누르면 아요 자리에 내려놓는다(겹치면 살짝 옆으로)
   drop(i) {
     const c = game.collect;
-    if (c.phase !== 'play' || !c.bag[i]) return;
-    c.items.push({ type: c.bag[i], x: c.ayo.x, y: c.ayo.y, immune: true });
+    if (c.phase !== 'play' || c.confirm || !c.bag[i]) return;
+    let x = c.ayo.x, y = c.ayo.y;
+    for (const [dx, dy] of [[0, 0], [60, 0], [-60, 0], [0, 60], [0, -60], [60, 60], [-60, 60]]) {
+      const free = !isBlocked(c.ayo.x + dx, c.ayo.y + dy) && !c.loose.some(l => Math.hypot(l.x - c.ayo.x - dx, l.y - c.ayo.y - dy) < 50);
+      if (free) { x = c.ayo.x + dx; y = c.ayo.y + dy; break; }
+    }
+    c.loose.push({ type: c.bag[i], x, y, sx: x, sy: y });
     c.bag[i] = null;
     this.renderBag();
   },
+
+  // ----- 처음으로: 확인 창을 띄우고 타이머를 멈춘다 -----
+  askQuit() {
+    const c = game.collect;
+    if (c.confirm || c.phase !== 'play') return;
+    c.confirm = true;
+    c.pauseAt = performance.now();
+    c.keys.clear();
+    const back = el('div', 'confirm-back');
+    const box = el('div', 'sheet confirm-box');
+    box.append(el('p', '', CHALLENGE_STORY.quitAsk));
+    const yes = button('confirm-yes', CHALLENGE_STORY.yes, goHome);
+    const no = button('primary confirm-no', CHALLENGE_STORY.no, () => this.resume(back));
+    box.append(yes, no);
+    back.append(box);
+    ui.append(back);
+    no.focus();
+  },
+  resume(back) {
+    const c = game.collect;
+    const paused = performance.now() - c.pauseAt;
+    c.startMs += paused;
+    c.lastMs = performance.now();
+    c.hintUntil += paused;
+    if (c.busy) { c.busy.start += paused; c.busy.until += paused; }
+    if (c.toast) c.toast.until += paused;
+    c.confirm = false;
+    back.remove();
+    if (document.activeElement) document.activeElement.blur();
+    game.lastInput = performance.now();
+  },
+
   finish() {
     const c = game.collect;
-    game.parts = partsFromBag(c.bag);
+    game.parts = partsFromBag(c.bag, c.empties);
     game.lastInput = performance.now();
     if (!game.parts.canBuild) { go('noParts'); return; }
     // 가진 재료 중 가장 큰 날개, 가장 가벼운 몸통을 먼저 골라 둔다
@@ -1324,19 +1738,123 @@ screens.collect = {
     game.isRetry = false;
     go('build');
   },
-  // 화면을 누르거나 끄는 곳으로 걸어간다
-  pointTo(e) {
+
+  // ----- 누른 곳에 무엇이 있는지 찾아서 그쪽으로 걸어간다 -----
+  tapAt(x, y) {
     const c = game.collect;
-    if (c.phase !== 'play') return;
-    const rect = ui.getBoundingClientRect();
-    const a = CHALLENGE.walkArea, r = CHALLENGE.ayoRadius;
-    c.target = {
-      x: clamp((e.clientX - rect.left) / rect.width * W, a.x + r, a.x + a.w - r),
-      y: clamp((e.clientY - rect.top) / rect.height * H, a.y + r, a.y + a.h - r),
+    if (c.phase !== 'play' || c.confirm || c.busy || c.popup) return;
+    c.usedKeys = false;
+    const R = CHALLENGE.tapRadius;
+    const near = (list, skip) => {
+      let best = null, bestD = R;
+      for (const it of list) {
+        if (skip && skip(it)) continue;
+        const d = Math.hypot(it.x - x, it.y - y);
+        if (d < bestD) { bestD = d; best = it; }
+      }
+      return best;
     };
+    const item = near(c.loose);
+    if (item) { this.walkTo(item.sx, item.sy, { kind: 'item', item }); return; }
+    const spot = near(c.spots, s => s.opened);
+    if (spot) { this.walkTo(spot.sx, spot.sy, { kind: 'search', spot }); return; }
+    const person = near(c.villagers, v => v.talked);
+    if (person) { this.walkTo(person.sx, person.sy, { kind: 'talk', person }); return; }
+    this.walkTo(x, y, null);
   },
+  walkTo(x, y, intent) {
+    const c = game.collect;
+    c.path = findPath(c.ayo, { x, y });
+    c.intent = intent;
+    if (c.path.length === 0 && intent) { // 이미 그 자리에 있음
+      c.intent = null;
+      this.begin(intent);
+    }
+  },
+  // 방향키 이동 중: 스페이스바·Enter로 가장 가까운 것을 뒤진다
+  nearestReach() {
+    const c = game.collect, R = CHALLENGE.reachDistance;
+    let best = null, bestD = R;
+    const check = (it, make) => {
+      const d = Math.hypot(it.x - c.ayo.x, it.y - c.ayo.y);
+      if (d < bestD) { bestD = d; best = make(it); best.at = it; }
+    };
+    c.loose.forEach(it => check(it, item => ({ kind: 'item', item })));
+    c.spots.filter(s => !s.opened).forEach(s => check(s, spot => ({ kind: 'search', spot })));
+    c.villagers.filter(v => !v.talked).forEach(v => check(v, person => ({ kind: 'talk', person })));
+    return best;
+  },
+  useNearest() {
+    const c = game.collect;
+    if (c.phase !== 'play' || c.confirm || c.busy || c.popup) return;
+    const target = this.nearestReach();
+    if (target) { c.path = []; c.intent = null; this.begin(target); }
+  },
+  begin(intent) {
+    const c = game.collect, now = performance.now();
+    if (intent.kind === 'item') { this.openPopup(intent.item); return; }
+    const secs = intent.kind === 'search' ? SEARCH_TIME : TALK_TIME;
+    c.busy = { ...intent, start: now, until: now + secs * 1000 };
+    c.moving = false;
+  },
+  finishBusy() {
+    const c = game.collect, b = c.busy;
+    c.busy = null;
+    if (b.kind === 'search') {
+      const s = b.spot;
+      s.opened = true;
+      if (s.loot === 'empty') {
+        c.empties++;
+        this.showToast(CHALLENGE_STORY.emptyLoot);
+      } else {
+        const item = { type: s.loot, x: s.x, y: s.y - 12, sx: s.sx, sy: s.sy };
+        c.loose.push(item);
+        this.openPopup(item);
+      }
+    } else {
+      b.person.talked = true;
+      const hint = makeHint(c.spots, c.rng);
+      const spot = c.spots.find(s => s.id === hint.spotId);
+      if (spot) spot.hint = hint.item === 'empty' ? 'empty' : 'part';
+      ui.querySelector('.hint-bubble')?.remove();
+      ui.append(el('div', 'bubble hint-bubble', hint.text));
+      c.hintUntil = performance.now() + CHALLENGE.hintShowSeconds * 1000;
+    }
+  },
+  // ----- 부품 팝업: 담기 / 두고 가기 -----
+  openPopup(item) {
+    const c = game.collect;
+    c.popup = item;
+    const box = el('div', 'sheet loot-popup');
+    const pic = el('canvas');
+    pic.width = 420; pic.height = 280;
+    drawItem(pic.getContext('2d'), item.type, 210, 140, 3.4);
+    box.append(pic, el('p', 'loot-name', ITEMS[item.type].name));
+    const take = button('primary loot-take', CHALLENGE_STORY.take, () => this.takeItem());
+    const leave = button('loot-leave', CHALLENGE_STORY.leave, () => this.closePopup());
+    box.append(take, leave);
+    ui.append(box);
+    take.focus();
+  },
+  closePopup() {
+    const c = game.collect;
+    c.popup = null;
+    ui.querySelector('.loot-popup')?.remove();
+    if (document.activeElement) document.activeElement.blur();
+  },
+  takeItem() {
+    const c = game.collect;
+    const free = c.bag.indexOf(null);
+    if (free < 0) { this.showToast(CHALLENGE_STORY.bagFull); return; }
+    c.bag[free] = c.popup.type;
+    c.loose.splice(c.loose.indexOf(c.popup), 1);
+    this.renderBag();
+    this.closePopup();
+  },
+
   update(now) {
     const c = game.collect;
+    if (c.confirm) return; // 확인 창이 떠 있으면 모두 멈춘다
     const dt = Math.min(0.05, (now - c.lastMs) / 1000);
     c.lastMs = now;
     if (c.phase === 'timeup') {
@@ -1344,53 +1862,49 @@ screens.collect = {
       return;
     }
     if (now - c.startMs >= TIME_LIMIT * 1000) {
-      c.phase = 'timeup'; c.endMs = now; c.target = null; c.moving = false;
+      c.phase = 'timeup'; c.endMs = now; c.path = []; c.intent = null; c.moving = false; c.busy = null;
+      this.closePopup();
       ui.querySelector('.done-btn').remove();
+      ui.querySelector('.home-btn')?.remove();
+      ui.querySelector('.hint-bubble')?.remove();
       ui.append(el('div', 'bubble timeup-bubble', CHALLENGE_STORY.timeUp));
       return;
     }
-    // 이동: 방향키가 우선, 없으면 누른 곳으로
+    if (c.hintUntil && now > c.hintUntil) { c.hintUntil = 0; ui.querySelector('.hint-bubble')?.remove(); }
+    if (c.busy) { if (now >= c.busy.until) this.finishBusy(); return; }
+    if (c.popup) return;
+
     const step = CHALLENGE.walkSpeed * speedScaleOf(c.bag) * dt;
-    let dx = 0, dy = 0;
+    c.moving = false;
     const k = c.keys;
     if (k.size) {
-      dx = (k.has('ArrowRight') ? 1 : 0) - (k.has('ArrowLeft') ? 1 : 0);
-      dy = (k.has('ArrowDown') ? 1 : 0) - (k.has('ArrowUp') ? 1 : 0);
-      c.target = null;
-    } else if (c.target) {
-      dx = c.target.x - c.ayo.x;
-      dy = c.target.y - c.ayo.y;
+      // 방향키: 가로·세로를 따로 움직여서 벽을 따라 미끄러지게 한다
+      c.path = []; c.intent = null; c.usedKeys = true;
+      let dx = (k.has('ArrowRight') ? 1 : 0) - (k.has('ArrowLeft') ? 1 : 0);
+      let dy = (k.has('ArrowDown') ? 1 : 0) - (k.has('ArrowUp') ? 1 : 0);
+      const len = Math.hypot(dx, dy);
+      if (len) {
+        dx *= step / len; dy *= step / len;
+        const x0 = c.ayo.x, y0 = c.ayo.y;
+        if (!isBlocked(c.ayo.x + dx, c.ayo.y)) c.ayo.x += dx;
+        if (!isBlocked(c.ayo.x, c.ayo.y + dy)) c.ayo.y += dy;
+        c.moving = c.ayo.x !== x0 || c.ayo.y !== y0;
+      }
+      return;
     }
-    const len = Math.hypot(dx, dy);
-    c.moving = false;
-    if (len > 0.5) {
-      const mx = dx / len * Math.min(step, c.target ? len : step);
-      const my = dy / len * Math.min(step, c.target ? len : step);
-      // 가로·세로를 따로 움직여서 벽을 따라 미끄러지게 한다
-      const x0 = c.ayo.x, y0 = c.ayo.y;
-      if (!isBlocked(c.ayo.x + mx, c.ayo.y)) c.ayo.x += mx;
-      if (!isBlocked(c.ayo.x, c.ayo.y + my)) c.ayo.y += my;
-      const moved = Math.hypot(c.ayo.x - x0, c.ayo.y - y0);
-      c.moving = moved > 0;
-      // 거의 못 움직이면(벽에 막힘) 멈춘다
-      if (c.target && moved < Math.min(step, len) * 0.15) { c.target = null; c.moving = false; }
-    } else c.target = null;
-
-    // 부품 줍기
-    const R = CHALLENGE.pickupRadius;
-    let touched = null;
-    for (const it of c.items) {
-      const d = Math.hypot(it.x - c.ayo.x, it.y - c.ayo.y);
-      if (it.immune) { if (d > R + 14) it.immune = false; continue; }
-      if (d < R) { touched = it; break; }
+    // 누른 곳으로: 정해진 길을 따라 걷는다
+    let left = step;
+    while (left > 0 && c.path.length) {
+      const p = c.path[0];
+      const d = Math.hypot(p.x - c.ayo.x, p.y - c.ayo.y);
+      if (d <= left) { c.ayo.x = p.x; c.ayo.y = p.y; c.path.shift(); left -= d; }
+      else { c.ayo.x += (p.x - c.ayo.x) / d * left; c.ayo.y += (p.y - c.ayo.y) / d * left; left = 0; }
+      c.moving = true;
     }
-    if (touched) {
-      const free = c.bag.indexOf(null);
-      if (free >= 0) {
-        c.bag[free] = touched.type;
-        c.items.splice(c.items.indexOf(touched), 1);
-        this.renderBag();
-      } else c.toastUntil = now + 1400;
+    if (!c.path.length && c.intent) {
+      const intent = c.intent;
+      c.intent = null;
+      this.begin(intent);
     }
   },
   draw(now) {
@@ -1398,19 +1912,58 @@ screens.collect = {
     if (game.screen !== 'collect') return; // update에서 화면이 넘어간 경우
     const c = game.collect;
     drawBg();
-    for (const it of c.items) drawItem(ctx, it.type, it.x, it.y, 1);
-    if (c.target) {
+    const t = c.confirm ? c.pauseAt : now;
+    for (const s of c.spots) this.drawSpot(s, t);
+    for (const it of c.loose) drawItem(ctx, it.type, it.x, it.y, 0.9);
+    for (const v of c.villagers) drawVillager(ctx, v, t);
+    if (c.path.length) {
+      const goal = c.path[c.path.length - 1];
       ctx.strokeStyle = C.orangeDark; ctx.lineWidth = 5;
-      circle(ctx, c.target.x, c.target.y, 16); ctx.stroke();
+      circle(ctx, goal.x, goal.y, 16); ctx.stroke();
     }
-    this.drawAyoTop(now);
-    this.drawTimer(now);
-    if (now < c.toastUntil) this.drawToast(CHALLENGE_STORY.bagFull);
+    this.drawAyoTop(t);
+    if (c.busy) this.drawBar(c.busy, t);
+    if (c.usedKeys && !c.busy && !c.popup && c.phase === 'play') {
+      const near = this.nearestReach();
+      if (near) this.drawMark(near.at.x, near.at.y - 66);
+    }
+    this.drawTimer(t);
+    if (c.toast && t < c.toast.until) this.drawToast(c.toast.text);
     if (c.phase === 'timeup') {
       ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 6;
       roundBox(ctx, 400, 250, 1160, 500, 40); ctx.fill(); ctx.stroke();
       drawHamo(ctx, 'challengeTimeUp', 590, 500, 300, 340);
     }
+  },
+  drawSpot(s, now) {
+    const b = game.collect.busy;
+    const shaking = b && b.kind === 'search' && b.spot === s;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    if (shaking) { ctx.rotate(Math.sin(now / 45) * 0.09); ctx.translate(0, Math.abs(Math.sin(now / 90)) * -9); }
+    drawHideSpot(ctx, s.kind, s.opened);
+    ctx.restore();
+    // 힌트로 들은 곳 표시
+    if (s.hint && !s.opened) {
+      circle(ctx, s.x + 40, s.y - 40, 20); fillStroke(ctx, s.hint === 'empty' ? '#d9d4c8' : '#ffd94a', 3);
+      ctx.fillStyle = C.ink; ctx.font = '900 30px system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(s.hint === 'empty' ? '✕' : '!', s.x + 40, s.y - 39);
+    }
+  },
+  // 뒤지기·대화 진행 바
+  drawBar(b, now) {
+    const at = b.kind === 'search' ? b.spot : game.collect.ayo;
+    const k = clamp((now - b.start) / (b.until - b.start), 0, 1);
+    const x = at.x - 70, y = at.y - 96;
+    roundBox(ctx, x, y, 140, 26, 12); fillStroke(ctx, C.paper, 4);
+    if (k > 0.02) { roundBox(ctx, x + 4, y + 4, 132 * k, 18, 8); ctx.fillStyle = C.orange; ctx.fill(); }
+  },
+  drawMark(x, y) {
+    circle(ctx, x, y, 22); fillStroke(ctx, '#ffd94a', 3);
+    ctx.fillStyle = C.ink; ctx.font = '900 32px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('!', x, y + 1);
   },
   // 위에서 본 아요: 머리 위주로 단순하게
   drawAyoTop(now) {
@@ -1453,9 +2006,9 @@ screens.collect = {
   drawToast(text) {
     ctx.font = '800 56px system-ui, sans-serif';
     const tw = ctx.measureText(text).width + 70;
-    roundBox(ctx, 960 - tw / 2, 330, tw, 92, 24); fillStroke(ctx, '#ffe7c7', 4);
+    roundBox(ctx, 960 - tw / 2, 118, tw, 92, 24); fillStroke(ctx, '#ffe7c7', 4);
     ctx.fillStyle = C.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(text, 960, 378);
+    ctx.fillText(text, 960, 166);
   },
 };
 
@@ -1478,7 +2031,7 @@ screens.noParts = {
 // =============================================================
 function frame(now) {
   // 모으기 단계에서는 자동 리셋을 하지 않는다
-  if (game.screen === 'collect') game.lastInput = now;
+  if (game.screen === 'collect' && !game.collect.confirm) game.lastInput = now;
   const scr = screens[game.screen];
   // 60초 동안 입력이 없으면 타이틀로
   if (now - game.lastInput > CONFIG.idleResetSeconds * 1000) {
@@ -1513,25 +2066,24 @@ async function boot() {
   }
   window.addEventListener('contextmenu', e => e.preventDefault());
 
-  // 모으기 화면: 터치·클릭(누른 채 끌기 포함)으로 이동
+  // 모으기 화면: 터치·클릭
   ui.addEventListener('pointerdown', e => {
-    if (game.screen !== 'collect' || e.target.closest('button')) return;
-    game.collect.holding = true;
-    screens.collect.pointTo(e);
+    if (game.screen !== 'collect' || e.target.closest('button, .loot-popup, .confirm-back')) return;
+    const rect = ui.getBoundingClientRect();
+    screens.collect.tapAt((e.clientX - rect.left) / rect.width * W, (e.clientY - rect.top) / rect.height * H);
   });
-  ui.addEventListener('pointermove', e => {
-    if (game.screen === 'collect' && game.collect.holding) screens.collect.pointTo(e);
-  });
-  for (const type of ['pointerup', 'pointercancel']) {
-    window.addEventListener(type, () => { if (game.collect) game.collect.holding = false; });
-  }
-  // 모으기 화면: PC 방향키
+  // 모으기 화면: PC 방향키, 스페이스바·Enter로 뒤지기
   const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
   window.addEventListener('keydown', e => {
     touched();
-    if (game.screen === 'collect' && ARROWS.includes(e.key)) {
+    if (game.screen !== 'collect') return;
+    const c = game.collect;
+    if (c.confirm || c.popup) return; // 창이 떠 있으면 버튼이 키를 받는다
+    if (ARROWS.includes(e.key)) { e.preventDefault(); c.keys.add(e.key); }
+    else if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) {
       e.preventDefault();
-      game.collect.keys.add(e.key);
+      if (document.activeElement) document.activeElement.blur();
+      screens.collect.useNearest();
     }
   });
   window.addEventListener('keyup', e => { if (game.collect) game.collect.keys.delete(e.key); });

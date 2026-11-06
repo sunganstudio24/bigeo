@@ -181,54 +181,129 @@ const TEXT = {
   castle: '진주성',
   rulerUnit: '거리(m)',
   goalFlag: '아군 진영',
+  tryChallenge: '도전 모드 해보기',
+  tryEasy: '쉬운 모드로 연습하기',
 };
 
 // =============================================================
 // 도전 모드: 진주성 60초
 // =============================================================
-const BAG_SIZE = 5;          // 가방 칸 수
-const TIME_LIMIT = 60;       // 부품 모으기 제한 시간(초)
+const BAG_SIZE = 5;           // 가방 칸 수
+const TIME_LIMIT = 60;        // 부품 모으기 제한 시간(초)
 const SUCCESS_DISTANCE = 100; // 소식 전달에 성공하는 비행 거리(m)
+const SEARCH_TIME = 1;        // 숨김 장소를 뒤지는 시간(초)
+const TALK_TIME = 2;          // 마을 사람과 이야기하는 시간(초)
+
+// 부품 상태와 끈이 비행에 주는 영향
+const STATE_EFFECT = {
+  crackedBambooLift: 0.85, // 금 간 대나무: 들어 올리는 힘 배율(비행 중 흔들림)
+  tornPaperValue: 0.5,     // 찢어진 한지: 날개 크기 계산에서 세는 개수
+  noStringLift: 0.85,      // 끈이 없을 때: 들어 올리는 힘 배율
+};
 
 const CHALLENGE = {
-  walkSpeed: 170,        // 아요 걷는 속도(화면 1920 기준 초당 픽셀)
+  walkSpeed: 119,        // 아요 걷는 속도(화면 1920 기준 초당 픽셀)
   heavySlowEach: 0.2,    // 무거운 물건 하나당 줄어드는 속도
   minSpeedScale: 0.4,    // 아무리 무거워도 이 비율 아래로는 안 느려짐
-  pickupRadius: 50,      // 이 거리 안에 들어오면 부품을 줍는다(픽셀)
   ayoRadius: 28,         // 벽·건물에 부딪히는 아요 크기(픽셀)
   warnSeconds: 10,       // 남은 시간이 이 아래면 타이머가 빨개짐
   timeUpSeconds: 2.6,    // "시간 끝!" 안내를 보여 주는 시간(초)
-  noStringLift: 0.85,    // 끈이 없을 때 들어 올리는 힘 배율
   wingNeedPaper: { small: 1, normal: 2, big: 3 }, // 날개별 필요한 한지 수
   defaultBallast: 'front', // 조립 화면의 첫 무게추 위치
-  start: { x: 960, y: 450 }, // 아요 출발 위치
+  start: { x: 960, y: 465 }, // 아요 출발 위치
   walkArea: { x: 105, y: 145, w: 1710, h: 640 }, // 성벽 안쪽, 걸어 다닐 수 있는 곳
+  gridCell: 20,          // 길찾기 칸 크기(픽셀)
+  tapRadius: 75,         // 이 거리 안을 누르면 그 장소를 누른 것으로 봄(픽셀)
+  reachDistance: 110,    // 방향키로 움직일 때 스페이스바로 뒤질 수 있는 거리(픽셀)
+  fixedSeed: null,       // 숫자를 넣으면 매 판 같은 배치(시험용), null이면 판마다 다름
+  hintEmptyChance: 0.25, // 힌트가 "비어 있더라"일 확률
+  hintShowSeconds: 6,    // 힌트 말풍선을 보여 주는 시간(초)
+  toastSeconds: 1.4,     // "아무것도 없네…" 같은 짧은 안내 시간(초)
 };
 
-// 장소 5곳(x, y, w, h는 화면 1920×1080 기준 위치와 크기, 건물은 지나갈 수 없음)
+// 장소 이름표와 건물(x, y, w, h는 화면 1920×1080 기준, solid: false면 지나갈 수 있음)
 const MAP_PLACES = [
-  { id: 'forest',  name: '대나무숲', kind: 'forest', color: '#8fbf6a', x: 120,  y: 150, w: 340, h: 170 },
-  { id: 'storage', name: '창고',     kind: 'house',  color: '#b89a78', x: 760,  y: 150, w: 400, h: 170 },
-  { id: 'carpenter', name: '목공소', kind: 'house',  color: '#d3a878', x: 1460, y: 150, w: 340, h: 170 },
-  { id: 'paper',   name: '한지 공방', kind: 'house', color: '#f3ead6', x: 120,  y: 590, w: 340, h: 195 },
-  { id: 'smithy',  name: '대장간',   kind: 'house',  color: '#9aa3ab', x: 1460, y: 590, w: 340, h: 195 },
+  { id: 'forest',    name: '대나무숲',  kind: 'forest', color: '#8fbf6a', x: 120,  y: 150, w: 320, h: 110 },
+  { id: 'storage',   name: '창고',      kind: 'house',  color: '#b89a78', x: 950,  y: 150, w: 285, h: 110 },
+  { id: 'carpenter', name: '목공소',    kind: 'house',  color: '#d3a878', x: 1490, y: 150, w: 310, h: 110 },
+  { id: 'paper',     name: '한지 공방', kind: 'house',  color: '#f3ead6', x: 120,  y: 670, w: 320, h: 110 },
+  { id: 'yard',      name: '마당',      kind: 'label',  solid: false,     x: 900,  y: 556, w: 170, h: 84 },
+  { id: 'smithy',    name: '대장간',    kind: 'house',  color: '#9aa3ab', x: 1490, y: 670, w: 310, h: 110 },
 ];
 
 // 부품이 없는 장식 건물(지나갈 수 없음)
 const MAP_DECOR = [
-  { id: 'pavilion', name: '촉석루', kind: 'pavilion', color: '#5e8a84', x: 790, y: 610, w: 340, h: 175 },
+  { id: 'pavilion', name: '촉석루', kind: 'pavilion', color: '#5e8a84', x: 720, y: 660, w: 340, h: 120 },
 ];
 
-// 부품: name = 이름, spots = 놓인 위치, heavy = 무거워서 느려짐
-// use = 용도(body 몸통 / wing 날개 / string 끈 / trap 비거에 못 씀)
+// 담장(지나갈 수 없음). 틈이 있는 곳이 문입니다.
+const MAP_FENCES = [
+  // 위쪽 담장
+  { x: 105,  y: 390, w: 435, h: 20 }, { x: 780,  y: 390, w: 470, h: 20 }, { x: 1380, y: 390, w: 435, h: 20 },
+  // 아래쪽 담장
+  { x: 105,  y: 520, w: 435, h: 20 }, { x: 670,  y: 520, w: 470, h: 20 }, { x: 1380, y: 520, w: 435, h: 20 },
+  // 마당을 나누는 세로 담장
+  { x: 650,  y: 145, w: 20, h: 265 }, { x: 1250, y: 145, w: 20, h: 265 },
+  { x: 650,  y: 520, w: 20, h: 265 }, { x: 1250, y: 520, w: 20, h: 265 },
+];
+
+// 숨김 장소 종류 이름
+const HIDE_SPOT_KINDS = {
+  box: '상자', straw: '짚더미', jar: '항아리', crock: '장독', basket: '바구니',
+};
+
+// 숨김 장소 12곳: area = MAP_PLACES의 id, x·y = 위치, sx·sy = 아요가 서서 뒤지는 자리
+const HIDE_SPOTS = [
+  { id: 'forest-basket',  area: 'forest',    kind: 'basket', x: 170,  y: 335, sx: 245,  sy: 335 },
+  { id: 'forest-straw',   area: 'forest',    kind: 'straw',  x: 590,  y: 190, sx: 590,  sy: 265 },
+  { id: 'storage-straw',  area: 'storage',   kind: 'straw',  x: 730,  y: 190, sx: 730,  sy: 265 },
+  { id: 'storage-box',    area: 'storage',   kind: 'box',    x: 1180, y: 335, sx: 1105, sy: 335 },
+  { id: 'carpenter-box',  area: 'carpenter', kind: 'box',    x: 1320, y: 190, sx: 1320, sy: 265 },
+  { id: 'carpenter-basket', area: 'carpenter', kind: 'basket', x: 1760, y: 335, sx: 1685, sy: 335 },
+  { id: 'paper-basket',   area: 'paper',     kind: 'basket', x: 170,  y: 595, sx: 245,  sy: 595 },
+  { id: 'paper-box',      area: 'paper',     kind: 'box',    x: 590,  y: 740, sx: 590,  sy: 665 },
+  { id: 'yard-crock',     area: 'yard',      kind: 'crock',  x: 730,  y: 595, sx: 805,  sy: 595 },
+  { id: 'yard-jar',       area: 'yard',      kind: 'jar',    x: 1200, y: 740, sx: 1200, sy: 665 },
+  { id: 'smithy-jar',     area: 'smithy',    kind: 'jar',    x: 1320, y: 740, sx: 1320, sy: 665 },
+  { id: 'smithy-box',     area: 'smithy',    kind: 'box',    x: 1760, y: 595, sx: 1685, sy: 595 },
+];
+
+// 판마다 숨김 장소에 섞어 넣는 내용물(개수 합이 숨김 장소 수와 같아야 합니다). empty = 꽝
+const LOOT_TABLE = [
+  { item: 'bamboo', count: 1 },
+  { item: 'crackedBamboo', count: 1 },
+  { item: 'wood', count: 1 },
+  { item: 'iron', count: 1 },
+  { item: 'paper', count: 3 },
+  { item: 'tornPaper', count: 1 },
+  { item: 'string', count: 1 },
+  { item: 'empty', count: 3 },
+];
+
+// 부품: name = 이름, short = 가방 칸 이름, use = 용도(body 몸통 / wing 날개 / string 끈)
+// heavy = 무거워서 느려짐, hintRank = 힌트로 알려 주는 순서(작을수록 먼저)
 const ITEMS = {
-  bamboo: { name: '대나무', use: 'body',   bodyKey: 'bamboo', heavy: false, spots: [[210, 370], [350, 370]] },
-  wood:   { name: '나무판', use: 'body',   bodyKey: 'wood',   heavy: false, spots: [[1560, 370], [1700, 370]] },
-  iron:   { name: '쇠',     use: 'body',   bodyKey: 'iron',   heavy: true,  spots: [[1560, 545], [1700, 545]] },
-  paper:  { name: '한지',   use: 'wing',   heavy: false, spots: [[150, 545], [270, 545], [390, 545], [510, 545]] },
-  string: { name: '끈',     use: 'string', heavy: false, spots: [[780, 370], [880, 370]] },
-  jar:    { name: '항아리', use: 'trap',   heavy: true,  spots: [[1040, 370]] },
-  pot:    { name: '솥',     use: 'trap',   heavy: true,  spots: [[1140, 370]] },
+  bamboo:        { name: '튼튼한 대나무', short: '대나무',    use: 'body', bodyKey: 'bamboo', hintRank: 1 },
+  crackedBamboo: { name: '금 간 대나무',  short: '금 대나무', use: 'body', bodyKey: 'bamboo', cracked: true, hintRank: 3 },
+  wood:          { name: '나무판',        short: '나무판',    use: 'body', bodyKey: 'wood', hintRank: 2 },
+  iron:          { name: '쇠',            short: '쇠',        use: 'body', bodyKey: 'iron', heavy: true, hintRank: 3 },
+  paper:         { name: '깨끗한 한지',   short: '한지',      use: 'wing', hintRank: 1 },
+  tornPaper:     { name: '찢어진 한지',   short: '찢긴 한지', use: 'wing', torn: true, hintRank: 3 },
+  string:        { name: '튼튼한 끈',     short: '끈',        use: 'string', hintRank: 1 },
+};
+
+// 마을 사람 3명: x·y = 위치, sx·sy = 아요가 서서 이야기하는 자리
+const VILLAGERS = [
+  { id: 'v1', color: '#e0795b', x: 330,  y: 448, sx: 400,  sy: 470 },
+  { id: 'v2', color: '#6a9bd1', x: 800,  y: 448, sx: 870,  sy: 470 },
+  { id: 'v3', color: '#b57bc2', x: 1560, y: 448, sx: 1490, sy: 470 },
+];
+
+// 힌트 문장: {place} 장소, {spot} 숨김 장소, {item} 부품, {이가}·{은는} 받침에 맞는 조사
+const HINT_TEMPLATES = {
+  found: '{place} {spot}에 {item}{이가} 있던데?',
+  empty: '{place} {spot}{은는} 비어 있더라.',
+  none: '이제 내가 아는 건 없어. 힘내!',
 };
 
 // 도전 모드 문구
@@ -241,13 +316,22 @@ const CHALLENGE_STORY = {
   doneButton: '다 모았어!',
   bagFull: '가방이 꽉 찼어!',
   emptySlot: '빈 칸',
+  emptyLoot: '아무것도 없네…',
+  take: '담기',
+  leave: '두고 가기',
+  quitAsk: '그만두고 처음으로 갈까?',
+  yes: '예',
+  no: '아니오',
   timeUp: '시간 끝! 모은 부품으로 비거를 만들자!',
   noParts: '부품이 모자라… 다시 모아 볼까?',
   retry: '다시 도전',
   retryFull: '다시 도전(60초부터)',
   buildHello: '모은 부품으로 비거를 만들어 보자!',
   noString: '끈이 없어서 날개가 흔들려요',
-  trapNote: '이건 비거에 쓸 수 없어요',
+  crackedNote: '금 간 대나무라 조금 흔들릴 수 있어요',
+  tornNote: '찢어진 한지는 반 개로 쳐요',
+  crackedTag: '금 감',
+  wingLabelCount: '날개 (한지 {n}개)',
   needPaper: '한지 {n}개',
   noMaterial: '없음',
   successTitle: '성공!',
@@ -256,11 +340,13 @@ const CHALLENGE_STORY = {
   goalLeft: '목표 {goal}m까지 {left}m 남았어!',
 };
 
-// 도전 모드 실패 시 하모의 한 마디(규칙은 game.js의 challengeFeedbackKey, 위에서부터 먼저 맞는 것 하나)
+// 도전 모드 실패 시 하모의 한 마디(규칙은 game.js의 challengeFeedbackKey, 먼저 맞는 것 하나)
 // 어느 것도 맞지 않으면 기존 FEEDBACK만 나옵니다.
 const CHALLENGE_FEEDBACK = {
-  trap: '항아리랑 솥은 비거에 쓸 수 없었어. 꼭 필요한 것만 담아 보자!',
-  ironNoBamboo: '대나무를 못 가져와서 무거운 쇠로 만들었네. 다음엔 대나무숲부터 가 보자!',
+  ironNoBamboo: '대나무를 못 가져와서 무거운 쇠로 만들었네. 다음엔 대나무를 먼저 찾아보자!',
+  crackedBamboo: '대나무에 금이 가 있어서 비거가 흔들렸어. 튼튼한 걸 골라 보자!',
+  tornPaper: '찢어진 한지는 바람이 새어 나가. 깨끗한 한지를 찾아보자!',
+  manyEmpty: '마을 사람들한테 물어보면 어디에 있는지 알려 줄 거야!',
   littlePaper: '한지가 더 있었으면 날개를 크게 만들 수 있었어!',
-  noString: '끈이 없어서 날개가 흔들렸어. 창고에 끈이 있었지?',
+  noString: '끈이 없어서 날개가 흔들렸어. 다음엔 끈을 꼭 찾아보자!',
 };
