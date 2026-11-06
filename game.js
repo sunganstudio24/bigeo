@@ -11,12 +11,13 @@ const SAMPLE_EVERY = 4; // 궤적 저장 간격(스텝)
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 // 부품 조합 하나를 끝까지 계산해서 궤적과 결과를 돌려준다
-function simulateFlight(wingKey, bodyKey, ballastKey) {
+// liftScale: 들어 올리는 힘 배율(도전 모드에서 끈이 없을 때 사용, 쉬운 모드는 1)
+function simulateFlight(wingKey, bodyKey, ballastKey, liftScale = 1) {
   const f = CONFIG.flight;
   const wing = CONFIG.wings[wingKey];
   const body = CONFIG.bodies[bodyKey];
   const ballast = CONFIG.ballasts[ballastKey];
-  const ratio = wing.lift / body.weight;
+  const ratio = wing.lift * liftScale / body.weight;
 
   const mode = ballast.behavior === 'flip' ? 'flip' : body.alwaysCrash ? 'heavy' : 'glide';
   const dive = ballast.behavior === 'dive';
@@ -66,7 +67,7 @@ function simulateFlight(wingKey, bodyKey, ballastKey) {
   const w = CONFIG.world;
   const grade = gradeOf(distance, crashed);
   return {
-    wing: wingKey, body: bodyKey, ballast: ballastKey,
+    wing: wingKey, body: bodyKey, ballast: ballastKey, liftScale,
     samples, crashed, distance, grade,
     feedback: feedbackKey(wingKey, bodyKey, ballastKey),
     inRiver: x >= w.riverStart && x < w.riverEnd,
@@ -132,17 +133,128 @@ function runAllCombos() {
 }
 
 // =============================================================
+// 1-2. 도전 모드 규칙 (화면과 무관)
+// =============================================================
+// 가방 내용(['bamboo', 'paper', ...])을 조립에 쓸 수 있는 정보로 바꾼다
+function partsFromBag(bag) {
+  const items = bag.filter(Boolean);
+  const paper = items.filter(t => ITEMS[t].use === 'wing').length;
+  const bodies = [...new Set(items.filter(t => ITEMS[t].use === 'body').map(t => ITEMS[t].bodyKey))];
+  const traps = [...new Set(items.filter(t => ITEMS[t].use === 'trap'))];
+  const hasString = items.some(t => ITEMS[t].use === 'string');
+  return { paper, bodies, traps, hasString, canBuild: paper > 0 && bodies.length > 0 };
+}
+
+function wingUnlocked(parts, wingKey) { return parts.paper >= CHALLENGE.wingNeedPaper[wingKey]; }
+function liftScaleOf(parts) { return parts.hasString ? 1 : CHALLENGE.noStringLift; }
+
+// 무거운 물건 하나당 느려지고, 최소 속도 아래로는 내려가지 않는다
+function speedScaleOf(bag) {
+  const heavy = bag.filter(t => t && ITEMS[t].heavy).length;
+  return Math.max(CHALLENGE.minSpeedScale, 1 - CHALLENGE.heavySlowEach * heavy);
+}
+
+function isChallengeSuccess(flight) { return !flight.crashed && flight.distance >= SUCCESS_DISTANCE; }
+
+// 도전 모드 피드백: 위에서 먼저 맞는 것 하나. 해당 없으면 null(기존 FEEDBACK만 사용)
+function challengeFeedbackKey(parts, pick) {
+  if (parts.traps.length > 0) return 'trap';
+  if (pick.body === 'iron' && !parts.bodies.includes('bamboo')) return 'ironNoBamboo';
+  if (parts.paper <= 2) return 'littlePaper';
+  if (!parts.hasString) return 'noString';
+  return null;
+}
+
+// 대표 가방 조합 검사 — 브라우저 콘솔에서 runChallengeCombos() 실행
+function runChallengeCombos() {
+  const P = 'paper', B = 'bamboo', Wd = 'wood', I = 'iron', S = 'string', J = 'jar', T = 'pot';
+  // bag: 가방, wing/body/ballast: 조립 선택, must: 'ok' 성공 / 'fail' 실패 / 'near' 성공 또는 목표 근처, fb: 기대 피드백
+  const cases = [
+    { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'center', must: 'ok' },
+    { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'front',  must: 'fail', fb: null },
+    { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'back',   must: 'fail', fb: null },
+    { bag: [B, P, P, P, S],    wing: 'normal', body: 'bamboo', ballast: 'center', must: 'near' },
+    { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'center', must: 'near' },
+    { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'back',   must: 'fail', fb: 'littlePaper' },
+    { bag: [B, P, P, S, J],    wing: 'normal', body: 'bamboo', ballast: 'center', must: 'near' },
+    { bag: [B, P, P, J, T],    wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', fb: 'trap' },
+    { bag: [B, P, P, P, P],    wing: 'big',    body: 'bamboo', ballast: 'center', must: 'near' },
+    { bag: [B, P, P, P],       wing: 'big',    body: 'bamboo', ballast: 'center', must: 'near' },
+    { bag: [Wd, P, P, P],      wing: 'big',    body: 'wood',   ballast: 'center', must: 'fail', fb: 'noString' },
+    { bag: [B, P, S],          wing: 'small',  body: 'bamboo', ballast: 'center', must: 'fail', fb: 'littlePaper' },
+    { bag: [Wd, P, P, P, S],   wing: 'big',    body: 'wood',   ballast: 'center', must: 'fail', fb: null },
+    { bag: [Wd, P, P, S],      wing: 'normal', body: 'wood',   ballast: 'center', must: 'fail', fb: 'littlePaper' },
+    { bag: [I, P, P, P, S],    wing: 'big',    body: 'iron',   ballast: 'center', must: 'fail', fb: 'ironNoBamboo' },
+    { bag: [B, I, P, P, P],    wing: 'big',    body: 'iron',   ballast: 'center', must: 'fail', fb: 'noString' },
+    { bag: [I, J, T, P, P],    wing: 'normal', body: 'iron',   ballast: 'front',  must: 'fail', fb: 'trap' },
+    { bag: [P, P, P, S],       must: 'cannot' },
+    { bag: [B, S, J, T],       must: 'cannot' },
+    { bag: [],                 must: 'cannot' },
+  ];
+  const label = bag => {
+    const n = {};
+    bag.forEach(t => { n[ITEMS[t].name] = (n[ITEMS[t].name] || 0) + 1; });
+    return Object.keys(n).map(k => n[k] > 1 ? `${k}${n[k]}` : k).join('+') || '(빈 가방)';
+  };
+  const rows = [], problems = [];
+  for (const c of cases) {
+    const name = label(c.bag);
+    if (c.bag.length > BAG_SIZE) problems.push(`${name}: 가방 칸 초과`);
+    const parts = partsFromBag(c.bag);
+    if (c.must === 'cannot') {
+      rows.push({ 가방: name, 조립: '-', '거리(m)': '-', 결과: '만들 수 없음', 피드백: '부품이 모자람' });
+      if (parts.canBuild) problems.push(`${name}: 만들 수 없어야 함`);
+      continue;
+    }
+    if (!parts.canBuild) { problems.push(`${name}: 만들 수 있어야 함`); continue; }
+    if (!wingUnlocked(parts, c.wing)) problems.push(`${name}: ${c.wing} 날개는 잠겨 있어야 함`);
+    if (!parts.bodies.includes(c.body)) problems.push(`${name}: ${c.body} 몸통 재료가 없음`);
+    const fl = simulateFlight(c.wing, c.body, c.ballast, liftScaleOf(parts));
+    const ok = isChallengeSuccess(fl);
+    const pick = { wing: c.wing, body: c.body, ballast: c.ballast };
+    const extra = ok ? null : challengeFeedbackKey(parts, pick);
+    rows.push({
+      가방: name,
+      조립: `${CONFIG.wings[c.wing].short}/${CONFIG.bodies[c.body].short}/${CONFIG.ballasts[c.ballast].short}${parts.hasString ? '' : '(끈 없음)'}`,
+      '거리(m)': fl.distance, 결과: ok ? '성공' : `실패(${GRADE_TEXT[fl.grade]})`,
+      피드백: ok ? 'success' : `${fl.feedback}${extra ? ' + ' + extra : ''}`,
+    });
+    if (c.must === 'ok' && !ok) problems.push(`${name}: 반드시 성공해야 함(${fl.distance}m)`);
+    if (c.must === 'fail' && ok) problems.push(`${name}: 실패해야 함(${fl.distance}m)`);
+    if (c.must === 'near' && !ok && SUCCESS_DISTANCE - fl.distance > 15) problems.push(`${name}: 목표 근처여야 함(${fl.distance}m)`);
+    if ('fb' in c && !ok && extra !== c.fb) problems.push(`${name}: 피드백이 ${c.fb}여야 하는데 ${extra}`);
+    if ((c.body === 'iron' || c.ballast === 'back') && ok) problems.push(`${name}: 쇠 몸통·뒤 무게추인데 성공`);
+  }
+  // 쇠 몸통·뒤 무게추는 어떤 날개·끈이어도 실패
+  for (const wing of Object.keys(CONFIG.wings)) for (const scale of [1, CHALLENGE.noStringLift]) {
+    for (const body of Object.keys(CONFIG.bodies)) for (const ballast of Object.keys(CONFIG.ballasts)) {
+      if ((body === 'iron' || ballast === 'back') && isChallengeSuccess(simulateFlight(wing, body, ballast, scale))) {
+        problems.push(`${wing}/${body}/${ballast}: 반드시 실패해야 함`);
+      }
+    }
+  }
+  // 이동 속도: 무거운 물건 0~4개
+  const speeds = [0, 1, 2, 3, 4].map(n => speedScaleOf(Array(n).fill('iron')));
+  [1, 0.8, 0.6, 0.4, 0.4].forEach((v, i) => { if (Math.abs(speeds[i] - v) > 0.001) problems.push(`무거운 물건 ${i}개 속도 ${speeds[i]}`); });
+  console.table(rows);
+  if (problems.length) console.warn('문제 ' + problems.length + '건:\n' + problems.join('\n'));
+  else console.log('도전 모드 조합 검사 통과');
+  return { rows, problems };
+}
+
+// =============================================================
 // 2. 오늘의 최고 기록 (저장 실패해도 메모리로 계속 동작)
 // =============================================================
 const TOP_KEY = 'ayo-bigeo-top';
-let memoryTop = { date: '', list: [] };
+let memoryTop = { date: '', list: [], challenge: [] };
 
 function todayString() {
   const d = new Date();
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-function loadTop() {
+// mode: 'easy'(쉬운 모드) 또는 'challenge'(도전 모드)
+function loadTop(mode) {
   const today = todayString();
   try {
     const raw = localStorage.getItem(TOP_KEY);
@@ -151,15 +263,16 @@ function loadTop() {
       if (saved && saved.date === today && Array.isArray(saved.list)) memoryTop = saved;
     }
   } catch (e) { /* 저장소를 못 쓰면 메모리 기록만 사용 */ }
-  if (memoryTop.date !== today) memoryTop = { date: today, list: [] };
-  return memoryTop.list;
+  if (memoryTop.date !== today) memoryTop = { date: today, list: [], challenge: [] };
+  if (!Array.isArray(memoryTop.challenge)) memoryTop.challenge = [];
+  return mode === 'challenge' ? memoryTop.challenge : memoryTop.list;
 }
 
 // 같은 조합은 결과가 같으므로 한 번만 올린다. 추락은 올리지 않는다.
-function saveTop(flight) {
+function saveTop(flight, mode) {
   if (flight.crashed) return;
-  const list = loadTop();
-  const combo = `${flight.wing}/${flight.body}/${flight.ballast}`;
+  const list = loadTop(mode);
+  const combo = `${flight.wing}/${flight.body}/${flight.ballast}/${flight.liftScale}`;
   if (list.some(r => r.combo === combo)) return;
   list.push({ combo, distance: flight.distance });
   list.sort((a, b) => b.distance - a.distance);
@@ -193,6 +306,7 @@ const game = {
   pick: { ...CONFIG.defaults },
   history: [], flight: null, isRetry: false, goodbye: false, lastQuiz: -1,
   quizHamo: 'quiz',
+  mode: 'easy', parts: null, collect: null,
 };
 let canvas, ctx, ui, bg, bgCtx, bgKind = '';
 
@@ -404,7 +518,8 @@ function paperCloud(c, x, y, s) {
   c.fillRect(x - 60 * s, y + 8 * s, 134 * s, 30 * s);
 }
 
-function renderLandscape(c, withRuler) {
+// challenge: 도전 모드 비행 배경(왼쪽이 진주성, 오른쪽이 성 밖)
+function renderLandscape(c, withRuler, challenge) {
   const w = CONFIG.world, f = CONFIG.flight;
   const bottom = withRuler ? RULER_Y : H;
   c.fillStyle = C.sky; c.fillRect(0, 0, W, H);
@@ -420,15 +535,17 @@ function renderLandscape(c, withRuler) {
   c.lineTo(W, GROUND_Y); c.closePath(); c.fill();
 
   // 진주성 성벽과 누각
-  const wallL = px(70), wallR = W;
-  c.fillStyle = C.wall; c.fillRect(wallL, GROUND_Y - 62, wallR - wallL, 62);
-  c.fillStyle = C.wallDark;
-  for (let x = wallL; x < wallR; x += 44) c.fillRect(x, GROUND_Y - 78, 26, 18);
   const gx = px(100);
-  c.fillStyle = '#b5543f'; c.fillRect(gx - 74, GROUND_Y - 150, 12, 90); c.fillRect(gx + 62, GROUND_Y - 150, 12, 90); c.fillRect(gx - 6, GROUND_Y - 150, 12, 90);
-  c.fillStyle = C.roof;
-  c.beginPath(); c.moveTo(gx - 120, GROUND_Y - 138); c.quadraticCurveTo(gx - 60, GROUND_Y - 158, gx - 50, GROUND_Y - 205);
-  c.lineTo(gx + 50, GROUND_Y - 205); c.quadraticCurveTo(gx + 60, GROUND_Y - 158, gx + 120, GROUND_Y - 138); c.closePath(); c.fill();
+  if (!challenge) {
+    const wallL = px(70), wallR = W;
+    c.fillStyle = C.wall; c.fillRect(wallL, GROUND_Y - 62, wallR - wallL, 62);
+    c.fillStyle = C.wallDark;
+    for (let x = wallL; x < wallR; x += 44) c.fillRect(x, GROUND_Y - 78, 26, 18);
+    c.fillStyle = '#b5543f'; c.fillRect(gx - 74, GROUND_Y - 150, 12, 90); c.fillRect(gx + 62, GROUND_Y - 150, 12, 90); c.fillRect(gx - 6, GROUND_Y - 150, 12, 90);
+    c.fillStyle = C.roof;
+    c.beginPath(); c.moveTo(gx - 120, GROUND_Y - 138); c.quadraticCurveTo(gx - 60, GROUND_Y - 158, gx - 50, GROUND_Y - 205);
+    c.lineTo(gx + 50, GROUND_Y - 205); c.quadraticCurveTo(gx + 60, GROUND_Y - 158, gx + 120, GROUND_Y - 138); c.closePath(); c.fill();
+  }
 
   // 남강
   c.fillStyle = C.river; c.fillRect(0, GROUND_Y, W, bottom - GROUND_Y);
@@ -467,12 +584,126 @@ function renderLandscape(c, withRuler) {
     c.fillStyle = C.ink;
     c.font = '800 52px system-ui, sans-serif';
     c.textAlign = 'left'; c.textBaseline = 'middle';
-    c.fillText(TEXT.hill, 24, topY + 130);
-    c.fillText(TEXT.castle, gx - 78, GROUND_Y - 30);
+    c.fillText(challenge ? TEXT.castle : TEXT.hill, 24, topY + 130);
+    if (!challenge) c.fillText(TEXT.castle, gx - 78, GROUND_Y - 30);
     c.fillStyle = '#1f5f5a'; // 강 이름은 추락 장면과 겹치지 않게 모래밭 쪽에
     c.fillText('← ' + TEXT.river, px(w.riverEnd) + 24, GROUND_Y + 66);
+    if (challenge) renderGoal(c, topY);
     renderRuler(c);
   }
+}
+
+// 도전 모드: 산 위의 성벽과 목표 지점 깃발
+function renderGoal(c, topY) {
+  c.fillStyle = C.wall; c.fillRect(0, topY - 66, px(-15), 100);
+  c.fillStyle = C.wallDark;
+  for (let x = 6; x < px(-15) - 20; x += 44) c.fillRect(x, topY - 84, 26, 18);
+
+  const gx = px(SUCCESS_DISTANCE);
+  c.fillStyle = '#fbf0c6'; // 목표 지점부터 모래밭 색을 밝게
+  c.fillRect(gx, GROUND_Y - 4, W - gx, RULER_Y - GROUND_Y + 4);
+  c.fillStyle = C.ink; c.fillRect(gx - 4, GROUND_Y - 230, 8, 234);
+  c.beginPath(); c.moveTo(gx + 4, GROUND_Y - 230); c.lineTo(gx + 124, GROUND_Y - 192); c.lineTo(gx + 4, GROUND_Y - 154); c.closePath();
+  fillStroke(c, C.orange);
+  c.fillStyle = C.ink; c.font = '800 50px system-ui, sans-serif';
+  c.textAlign = 'left'; c.textBaseline = 'middle';
+  c.fillText(TEXT.goalFlag, gx + 16, GROUND_Y - 110);
+  c.fillText(`${SUCCESS_DISTANCE}m`, gx + 16, GROUND_Y - 54);
+}
+
+// 도전 모드: 위에서 본 진주성 지도
+function renderCastleMap(c) {
+  c.fillStyle = C.hill; c.fillRect(0, 0, W, H);
+  // 남강과 가방 자리
+  c.fillStyle = C.river; c.fillRect(0, 830, W, 82);
+  c.strokeStyle = C.riverLine; c.lineWidth = 5; c.lineCap = 'round';
+  for (let x = 40; x < W; x += 150) {
+    if (x > 850 && x < 1040) continue; // 강 이름 자리
+    const yy = 858 + (x % 300 ? 26 : 0);
+    c.beginPath(); c.moveTo(x, yy); c.quadraticCurveTo(x + 24, yy - 12, x + 48, yy); c.stroke();
+  }
+  c.lineCap = 'butt';
+  c.fillStyle = '#1f5f5a'; c.font = '800 50px system-ui, sans-serif';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(TEXT.river, 960, 872);
+  c.fillStyle = C.paper; c.fillRect(0, 912, W, H - 912);
+  c.fillStyle = C.ink; c.fillRect(0, 910, W, 4);
+
+  // 성벽과 성 안 땅
+  roundBox(c, 60, 100, 1800, 730, 24); fillStroke(c, C.wall, 5);
+  c.fillStyle = C.wallDark;
+  for (let x = 90; x < 1800; x += 60) { c.fillRect(x, 108, 34, 20); c.fillRect(x, 800, 34, 20); }
+  for (let y = 150; y < 790; y += 60) { c.fillRect(68, y, 20, 34); c.fillRect(1832, y, 20, 34); }
+  const a = CHALLENGE.walkArea;
+  c.fillStyle = '#e4f2bd'; c.fillRect(a.x, a.y, a.w, a.h);
+  c.strokeStyle = C.ink; c.lineWidth = 4; c.strokeRect(a.x, a.y, a.w, a.h);
+  c.fillStyle = '#f4e9c2'; c.fillRect(a.x + 2, 412, a.w - 4, 96); // 가운데 길
+
+  for (const p of [...MAP_PLACES, ...MAP_DECOR]) renderPlace(c, p);
+}
+
+function renderPlace(c, p) {
+  roundBox(c, p.x, p.y, p.w, p.h, 18); fillStroke(c, p.color);
+  c.strokeStyle = C.ink; c.lineWidth = 3;
+  if (p.kind === 'forest') {           // 대나무 줄기
+    c.lineWidth = 9; c.strokeStyle = '#5f9a4a'; c.lineCap = 'round';
+    for (let x = p.x + 30; x < p.x + p.w - 10; x += 46) {
+      c.beginPath(); c.moveTo(x, p.y + 16); c.lineTo(x, p.y + p.h - 16); c.stroke();
+    }
+    c.lineCap = 'butt';
+  } else if (p.kind === 'pavilion') {  // 촉석루 지붕
+    c.strokeRect(p.x + 26, p.y + 22, p.w - 52, p.h - 44);
+    c.beginPath(); c.moveTo(p.x, p.y); c.lineTo(p.x + 26, p.y + 22); c.moveTo(p.x + p.w, p.y); c.lineTo(p.x + p.w - 26, p.y + 22);
+    c.moveTo(p.x, p.y + p.h); c.lineTo(p.x + 26, p.y + p.h - 22); c.moveTo(p.x + p.w, p.y + p.h); c.lineTo(p.x + p.w - 26, p.y + p.h - 22); c.stroke();
+  } else {                             // 지붕 용마루
+    c.beginPath(); c.moveTo(p.x + 14, p.y + 28); c.lineTo(p.x + p.w - 14, p.y + 28); c.stroke();
+  }
+  // 이름표
+  c.font = '800 50px system-ui, sans-serif';
+  const tw = c.measureText(p.name).width + 36;
+  const cx = p.x + p.w / 2, cy = p.y + p.h / 2 + 8;
+  roundBox(c, cx - tw / 2, cy - 38, tw, 74, 14); fillStroke(c, C.paper, 3);
+  c.fillStyle = C.ink; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(p.name, cx, cy);
+}
+
+// 부품 아이콘 (원점이 가운데, 약 60px 크기)
+function drawItem(c, type, x, y, s) {
+  c.save(); c.translate(x, y); c.scale(s, s);
+  if (type === 'bamboo') {
+    c.rotate(0.25);
+    roundBox(c, -9, -34, 18, 68, 6); fillStroke(c, '#7dbb5a', 3);
+    c.strokeStyle = '#4c7f35'; c.lineWidth = 3;
+    for (const yy of [-12, 12]) { c.beginPath(); c.moveTo(-9, yy); c.lineTo(9, yy); c.stroke(); }
+  } else if (type === 'wood') {
+    roundBox(c, -34, -16, 68, 32, 5); fillStroke(c, C.wood, 3);
+    c.strokeStyle = C.woodDark; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(-28, -5); c.lineTo(28, -5); c.moveTo(-28, 6); c.lineTo(28, 6); c.stroke();
+  } else if (type === 'iron') {
+    c.beginPath(); c.moveTo(-30, 18); c.lineTo(-22, -12); c.lineTo(4, -22); c.lineTo(28, -8); c.lineTo(32, 18); c.closePath();
+    fillStroke(c, C.ironDark, 3);
+    c.fillStyle = C.iron; c.beginPath(); c.moveTo(-14, -6); c.lineTo(4, -13); c.lineTo(10, -3); c.lineTo(-8, 4); c.closePath(); c.fill();
+  } else if (type === 'paper') {
+    c.rotate(-0.08);
+    c.beginPath(); c.rect(-25, -28, 50, 56); fillStroke(c, '#ffffff', 3);
+    c.strokeStyle = C.wallDark; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(-16, -12); c.lineTo(16, -12); c.moveTo(-16, 4); c.lineTo(16, 4); c.stroke();
+  } else if (type === 'string') {
+    const curve = () => { c.beginPath(); c.moveTo(-30, 12); c.bezierCurveTo(-16, -30, 2, 30, 12, -4); c.bezierCurveTo(16, -18, 28, -16, 30, -2); c.stroke(); };
+    c.lineCap = 'round';
+    c.strokeStyle = C.ink; c.lineWidth = 12; curve();
+    c.strokeStyle = '#f4cc3c'; c.lineWidth = 7; curve();
+    c.lineCap = 'butt';
+  } else if (type === 'jar') {
+    c.beginPath(); c.moveTo(-12, -30); c.lineTo(12, -30); c.lineTo(10, -20); c.quadraticCurveTo(36, -6, 18, 30); c.lineTo(-18, 30); c.quadraticCurveTo(-36, -6, -10, -20); c.closePath();
+    fillStroke(c, '#6d4a2f', 3);
+  } else if (type === 'pot') {
+    c.beginPath(); c.moveTo(-38, -6); c.lineTo(38, -6); c.quadraticCurveTo(34, 30, 0, 30); c.quadraticCurveTo(-34, 30, -38, -6); c.closePath();
+    fillStroke(c, '#5a3c26', 3);
+    c.beginPath(); c.ellipse(0, -8, 28, 12, 0, Math.PI, 0); fillStroke(c, '#6d4a2f', 3);
+    circle(c, 0, -24, 6); fillStroke(c, '#6d4a2f', 3);
+  }
+  c.restore();
 }
 
 function renderRuler(c) {
@@ -499,6 +730,8 @@ function setBg(kind) {
   resetTransform(bgCtx);
   if (kind === 'title') renderLandscape(bgCtx, false);
   else if (kind === 'flight') renderLandscape(bgCtx, true);
+  else if (kind === 'flightChallenge') renderLandscape(bgCtx, true, true);
+  else if (kind === 'castle') renderCastleMap(bgCtx);
   else if (kind === 'build') {
     bgCtx.fillStyle = C.sky; bgCtx.fillRect(0, 0, W, H);
     paperCloud(bgCtx, 170, 120, 0.8);
@@ -533,6 +766,7 @@ const screens = {};
 function go(name, arg) {
   game.screen = name;
   ui.replaceChildren();
+  ui.className = '';
   screens[name].enter(arg);
   game.dirty = true;
 }
@@ -542,6 +776,39 @@ function newSession() {
   game.history = [];
   game.pick = { ...CONFIG.defaults };
   game.isRetry = false;
+  game.mode = 'easy';
+  game.parts = null;
+  game.collect = null;
+}
+
+function goHome() {
+  newSession();
+  game.goodbye = true;
+  go('title');
+}
+
+function twoLineButton(className, main, sub, onTap) {
+  const b = button(className, main, onTap);
+  b.append(el('small', '', sub));
+  return b;
+}
+
+// 오늘의 기록 한 칸(모드별)
+function topColumn(title, mode) {
+  const col = el('section');
+  col.append(el('h3', '', title));
+  const top = loadTop(mode);
+  if (top.length === 0) col.append(el('p', 'empty', TEXT.topEmpty));
+  else {
+    const ol = el('ol');
+    top.forEach((r, i) => {
+      const li = el('li');
+      li.append(el('span', 'rank', `${i + 1}위`), el('span', '', `${r.distance}m`));
+      ol.append(li);
+    });
+    col.append(ol);
+  }
+  return col;
 }
 
 // ----- title -----
@@ -552,30 +819,28 @@ screens.title = {
 
     const panel = el('div', 'sheet abs top-panel');
     panel.append(el('h2', '', TEXT.topTitle));
-    const top = loadTop();
-    if (top.length === 0) panel.append(el('p', 'empty', TEXT.topEmpty));
-    else {
-      const ol = el('ol');
-      top.forEach((r, i) => {
-        const li = el('li');
-        li.append(el('span', 'rank', `${i + 1}위`), el('span', '', `${r.distance}m`));
-        ol.append(li);
-      });
-      panel.append(ol);
-    }
+    const cols = el('div', 'top-cols');
+    cols.append(topColumn(TEXT.startEasy, 'easy'), topColumn(TEXT.startChallenge, 'challenge'));
+    panel.append(cols);
     ui.append(panel);
 
     const hello = el('div', 'bubble title-bubble', game.goodbye ? TEXT.titleBye : TEXT.titleHello);
     ui.append(hello);
-    ui.append(button('primary big start-btn', TEXT.start, () => {
+    ui.append(twoLineButton('primary start-btn start-easy', TEXT.startEasy, TEXT.startEasySub, () => {
       game.goodbye = false;
+      game.mode = 'easy';
       go('story');
+    }));
+    ui.append(twoLineButton('start-btn start-hard', TEXT.startChallenge, TEXT.startChallengeSub, () => {
+      game.goodbye = false;
+      game.mode = 'challenge';
+      go('challengeIntro');
     }));
   },
   draw(now) {
     drawBg();
     const bob = Math.sin(now / 600) * 10;
-    drawBigeo(ctx, game.pick, 1180, 520 + bob, 1, 4, Math.sin(now / 250) * 0.5 + 0.5);
+    drawBigeo(ctx, game.pick, 1090, 660 + bob, 1, 4, Math.sin(now / 250) * 0.5 + 0.5);
     drawHamo(ctx, 'title', 240, 640, 400, 470);
   },
   animated: true,
@@ -607,7 +872,17 @@ function drawBallastCard(c, key) {
   drawHull(c, 'wood');
 }
 
-function partGroup(label, slot, table, drawFn) {
+// 자물쇠 그림(잠긴 카드 오른쪽 위)
+function drawLock(c) {
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.lineWidth = 8; c.strokeStyle = C.ink;
+  c.beginPath(); c.arc(278, 38, 18, Math.PI, 0); c.stroke();
+  roundBox(c, 250, 38, 56, 44, 8); fillStroke(c, '#8a867c', 5);
+  c.fillStyle = C.ink; circle(c, 278, 58, 7); c.fill();
+}
+
+// locked(key): 잠긴 부품이면 안내 문구, 아니면 null / tagOf(key): 이름 아래 문구
+function partGroup(label, slot, table, drawFn, locked, tagOf) {
   const group = el('section', 'part-group');
   group.append(el('h2', '', label));
   const row = el('div', 'part-row');
@@ -617,11 +892,15 @@ function partGroup(label, slot, table, drawFn) {
     card.dataset.slot = slot; card.dataset.key = key;
     const pic = el('canvas');
     pic.width = 320; pic.height = 160;
-    drawFn(pic.getContext('2d'), key);
+    const lockText = locked ? locked(key) : null;
+    const picCtx = pic.getContext('2d');
+    drawFn(picCtx, key);
+    if (lockText) { drawLock(picCtx); card.disabled = true; }
     card.append(pic);
     const part = table[key];
     card.append(el('span', 'name', part.name));
-    if (part.tag) card.append(el('span', 'tag', `(${part.tag})`));
+    const tag = lockText || (tagOf ? tagOf(key) : part.tag);
+    if (tag) card.append(el('span', 'tag', `(${tag})`));
     card.setAttribute('aria-pressed', String(game.pick[slot] === key));
     card.addEventListener('click', () => {
       game.pick[slot] = key;
@@ -638,32 +917,59 @@ screens.build = {
   enter() {
     setBg('build');
     const panel = el('div', 'build-panel');
+    const parts = game.mode === 'challenge' ? game.parts : null;
+    const needText = key => CHALLENGE_STORY.needPaper.replace('{n}', CHALLENGE.wingNeedPaper[key]);
     panel.append(
-      partGroup(TEXT.wingLabel, 'wing', CONFIG.wings, drawWingCard),
-      partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard),
+      parts
+        ? partGroup(TEXT.wingLabel, 'wing', CONFIG.wings, drawWingCard, k => (wingUnlocked(parts, k) ? null : needText(k)), needText)
+        : partGroup(TEXT.wingLabel, 'wing', CONFIG.wings, drawWingCard),
+      parts
+        ? partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard, k => (parts.bodies.includes(k) ? null : CHALLENGE_STORY.noMaterial))
+        : partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard),
       partGroup(TEXT.ballastLabel, 'ballast', CONFIG.ballasts, drawBallastCard),
     );
     ui.append(panel);
-    ui.append(el('div', 'bubble build-bubble', game.isRetry ? TEXT.buildRetry : TEXT.buildHello));
+    let hello = game.isRetry ? TEXT.buildRetry : TEXT.buildHello;
+    if (parts) {
+      hello = parts.hasString ? CHALLENGE_STORY.buildHello : CHALLENGE_STORY.noString;
+      if (parts.traps.length) ui.append(trapNote(parts.traps));
+    }
+    ui.append(el('div', 'bubble build-bubble', hello));
     ui.append(button('primary big fly-btn', TEXT.fly, () => go('flight')));
   },
-  draw() {
+  // 끈이 없으면 날개가 흔들리는 모습을 계속 보여 준다
+  get animated() { return game.mode === 'challenge' && game.parts && !game.parts.hasString; },
+  draw(now) {
     drawBg();
-    drawBigeo(ctx, game.pick, 420, 330, 1.6, 0, 0);
+    const wobble = this.animated ? Math.sin(now / 70) * 0.9 : 0;
+    drawBigeo(ctx, game.pick, 420, 330, 1.6, wobble * 1.5, wobble);
     drawHamo(ctx, game.isRetry ? 'retry' : 'build', 130, 720, 220, 230);
   },
 };
+
+// 비거에 못 쓰는 물건 안내(회색)
+function trapNote(traps) {
+  const note = el('div', 'trap-note');
+  for (const t of traps) {
+    const pic = el('canvas');
+    pic.width = 96; pic.height = 64;
+    drawItem(pic.getContext('2d'), t, 48, 32, 0.8);
+    note.append(pic);
+  }
+  note.append(el('span', '', `${traps.map(t => ITEMS[t].name).join(', ')}: ${CHALLENGE_STORY.trapNote}`));
+  return note;
+}
 
 // ----- flight -----
 const READY_MS = 900, LAND_MS = 1700;
 
 screens.flight = {
   enter() {
-    setBg('flight');
+    const challenge = game.mode === 'challenge';
+    setBg(challenge ? 'flightChallenge' : 'flight');
     const p = game.pick;
-    game.flight = simulateFlight(p.wing, p.body, p.ballast);
+    game.flight = simulateFlight(p.wing, p.body, p.ballast, challenge ? liftScaleOf(game.parts) : 1);
     game.flightStart = performance.now();
-    game.flightNow = game.flightStart;
     game.flightCursor = 0;
   },
   animated: true,
@@ -779,8 +1085,9 @@ screens.flight = {
 };
 
 // ----- result -----
-function buildChart() {
-  const chart = el('div', 'sheet abs chart');
+function buildChart(compact) {
+  const barMax = compact ? 3.7 : 10.2;
+  const chart = el('div', 'sheet abs chart' + (compact ? ' compact' : ''));
   chart.append(el('h2', '', TEXT.chartTitle));
   const grid = el('div', 'chart-grid');
   const runs = game.history;
@@ -794,7 +1101,7 @@ function buildChart() {
     if (run) {
       cell.append(el('span', 'bar-value', String(run.distance)));
       const bar = el('div', 'bar');
-      bar.style.height = (Math.min(1, run.distance / CONFIG.world.rulerMax) * 10.2) + 'rem';
+      bar.style.height = (Math.min(1, run.distance / CONFIG.world.rulerMax) * barMax) + 'rem';
       cell.append(bar);
     }
     grid.append(cell);
@@ -821,7 +1128,8 @@ screens.result = {
     const fl = game.flight;
     game.history.push({ distance: fl.distance, wing: fl.wing, body: fl.body, ballast: fl.ballast });
     if (game.history.length > CONFIG.historyMax) game.history.shift();
-    saveTop(fl);
+    saveTop(fl, game.mode);
+    if (game.mode === 'challenge') { this.enterChallenge(fl); return; }
 
     ui.append(el('div', 'abs grade ' + fl.grade, GRADE_TEXT[fl.grade]));
     const dist = el('div', 'abs distance', String(fl.distance));
@@ -832,8 +1140,39 @@ screens.result = {
     ui.append(button('primary result-retry', TEXT.retry, () => { game.isRetry = true; go('build'); }));
     ui.append(button('result-quiz', TEXT.toQuiz, () => go('quiz')));
   },
+  // 도전 모드 결과: 기존 결과 + 목표 안내 + 전용 피드백 + 버튼 3개
+  enterChallenge(fl) {
+    const S = CHALLENGE_STORY;
+    const ok = isChallengeSuccess(fl);
+    ui.className = 'result-challenge';
+    ui.append(el('div', 'abs grade ' + (ok ? 'best' : fl.grade), ok ? S.successTitle : GRADE_TEXT[fl.grade]));
+    const dist = el('div', 'abs distance', String(fl.distance));
+    dist.append(el('small', '', 'm'));
+    ui.append(dist);
+    const goalText = ok
+      ? S.goalReached.replace('{goal}', SUCCESS_DISTANCE)
+      : S.goalLeft.replace('{goal}', SUCCESS_DISTANCE).replace('{left}', SUCCESS_DISTANCE - fl.distance);
+    ui.append(el('div', 'abs goal-line', goalText));
+
+    const bubble = el('div', 'bubble challenge-bubble' + (ok ? ' ok' : ''));
+    if (ok) bubble.append(el('p', '', S.success));
+    else {
+      bubble.append(el('p', '', FEEDBACK[fl.feedback]));
+      const key = challengeFeedbackKey(game.parts, game.pick);
+      if (key) bubble.append(el('p', 'extra', CHALLENGE_FEEDBACK[key]));
+    }
+    ui.append(bubble);
+    ui.append(buildChart(true));
+    ui.append(button('primary c-retry', S.retryFull, () => go('collect')));
+    ui.append(button('c-quiz', TEXT.toQuiz, () => go('quiz')));
+    ui.append(button('c-home', TEXT.home, goHome));
+  },
   draw() {
     drawBg();
+    if (game.mode === 'challenge') {
+      drawHamo(ctx, isChallengeSuccess(game.flight) ? 'challengeSuccess' : game.flight.grade, 150, 715, 220, 270);
+      return;
+    }
     drawHamo(ctx, game.flight.grade, 150, 640, 230, 300);
   },
 };
@@ -843,9 +1182,11 @@ screens.quiz = {
   enter() {
     setBg('paper');
     game.quizHamo = 'quiz';
-    // 바로 앞 문제와 겹치지 않게 고른다
-    let idx = Math.floor(Math.random() * QUIZ.length);
-    if (QUIZ.length > 1 && idx === game.lastQuiz) idx = (idx + 1) % QUIZ.length;
+    // 이번 모드에 나올 수 있는 문제 중에서, 바로 앞 문제와 겹치지 않게 고른다
+    const pool = QUIZ.map((q, i) => i).filter(i => !QUIZ[i].mode || QUIZ[i].mode === game.mode);
+    let at = Math.floor(Math.random() * pool.length);
+    if (pool.length > 1 && pool[at] === game.lastQuiz) at = (at + 1) % pool.length;
+    const idx = pool[at];
     game.lastQuiz = idx;
     const q = QUIZ[idx];
 
@@ -867,12 +1208,12 @@ screens.quiz = {
         game.quizHamo = choice.correct ? 'quizRight' : 'quizWrong';
         game.dirty = true;
         ui.append(el('div', 'bubble quiz-bubble', choice.correct ? q.right : q.wrong));
-        ui.append(button('quiz-home', TEXT.home, () => {
-          newSession();
-          game.goodbye = true;
-          go('title');
-        }));
-        ui.append(button('primary quiz-again', TEXT.flyAgain, () => { game.isRetry = true; go('build'); }));
+        ui.append(button('quiz-home', TEXT.home, goHome));
+        if (game.mode === 'challenge') {
+          ui.append(button('primary quiz-again', CHALLENGE_STORY.retryFull, () => go('collect')));
+        } else {
+          ui.append(button('primary quiz-again', TEXT.flyAgain, () => { game.isRetry = true; go('build'); }));
+        }
       });
       return b;
     });
@@ -886,10 +1227,258 @@ screens.quiz = {
   },
 };
 
+// ----- challengeIntro: 도전 모드 상황 소개 -----
+screens.challengeIntro = {
+  enter() {
+    setBg('title');
+    const [a, b] = CHALLENGE_STORY.intro;
+    ui.append(el('div', 'bubble intro-bubble first', a.text));
+    ui.append(el('div', 'bubble intro-bubble second', b.text));
+    ui.append(button('primary big story-btn', CHALLENGE_STORY.startButton, () => go('collect')));
+  },
+  draw() {
+    drawBg();
+    ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 6;
+    roundBox(ctx, 120, 50, 1680, 760, 56); ctx.fill(); ctx.stroke();
+    const [a, b] = CHALLENGE_STORY.intro;
+    drawHamo(ctx, a.hamo, 320, 250, 300, 310);
+    drawHamo(ctx, b.hamo, 320, 610, 300, 310);
+  },
+};
+
+// ----- collect: 60초 부품 모으기 -----
+function newCollect() {
+  const items = [];
+  for (const type of Object.keys(ITEMS)) {
+    for (const [x, y] of ITEMS[type].spots) items.push({ type, x, y, immune: false });
+  }
+  return {
+    phase: 'play', startMs: performance.now(), lastMs: performance.now(), endMs: 0,
+    ayo: { x: CHALLENGE.start.x, y: CHALLENGE.start.y }, target: null, moving: false,
+    items, bag: Array(BAG_SIZE).fill(null), keys: new Set(), toastUntil: 0, holding: false,
+    slots: [],
+  };
+}
+
+// 벽·건물 충돌: 아요를 사각형으로 보고 단순 판정
+function isBlocked(x, y) {
+  const r = CHALLENGE.ayoRadius, a = CHALLENGE.walkArea;
+  if (x - r < a.x || x + r > a.x + a.w || y - r < a.y || y + r > a.y + a.h) return true;
+  for (const p of [...MAP_PLACES, ...MAP_DECOR]) {
+    if (x + r > p.x && x - r < p.x + p.w && y + r > p.y && y - r < p.y + p.h) return true;
+  }
+  return false;
+}
+
+screens.collect = {
+  animated: true,
+  enter() {
+    setBg('castle');
+    ui.className = 'collecting';
+    const c = game.collect = newCollect();
+    const row = el('div', 'bag-row');
+    c.slots = c.bag.map((_, i) => {
+      const slot = el('button', 'bag-slot');
+      slot.type = 'button';
+      slot.addEventListener('click', () => this.drop(i));
+      row.append(slot);
+      return slot;
+    });
+    ui.append(row);
+    this.renderBag();
+    ui.append(button('primary done-btn', CHALLENGE_STORY.doneButton, () => this.finish()));
+  },
+  renderBag() {
+    const c = game.collect;
+    c.slots.forEach((slot, i) => {
+      const type = c.bag[i];
+      slot.className = 'bag-slot' + (type ? '' : ' empty');
+      slot.replaceChildren();
+      if (type) {
+        const pic = el('canvas');
+        pic.width = 120; pic.height = 80;
+        drawItem(pic.getContext('2d'), type, 60, 40, 1);
+        slot.append(pic, el('span', '', ITEMS[type].name));
+      } else slot.append(el('span', '', CHALLENGE_STORY.emptySlot));
+    });
+  },
+  // 가방 칸을 누르면 아요 자리에 내려놓는다. 멀어지기 전까지는 다시 줍지 않는다.
+  drop(i) {
+    const c = game.collect;
+    if (c.phase !== 'play' || !c.bag[i]) return;
+    c.items.push({ type: c.bag[i], x: c.ayo.x, y: c.ayo.y, immune: true });
+    c.bag[i] = null;
+    this.renderBag();
+  },
+  finish() {
+    const c = game.collect;
+    game.parts = partsFromBag(c.bag);
+    game.lastInput = performance.now();
+    if (!game.parts.canBuild) { go('noParts'); return; }
+    // 가진 재료 중 가장 큰 날개, 가장 가벼운 몸통을 먼저 골라 둔다
+    const wing = ['big', 'normal', 'small'].find(k => wingUnlocked(game.parts, k));
+    const body = Object.keys(CONFIG.bodies)
+      .filter(k => game.parts.bodies.includes(k))
+      .sort((p, q) => CONFIG.bodies[p].weight - CONFIG.bodies[q].weight)[0];
+    game.pick = { wing, body, ballast: CHALLENGE.defaultBallast };
+    game.isRetry = false;
+    go('build');
+  },
+  // 화면을 누르거나 끄는 곳으로 걸어간다
+  pointTo(e) {
+    const c = game.collect;
+    if (c.phase !== 'play') return;
+    const rect = ui.getBoundingClientRect();
+    const a = CHALLENGE.walkArea, r = CHALLENGE.ayoRadius;
+    c.target = {
+      x: clamp((e.clientX - rect.left) / rect.width * W, a.x + r, a.x + a.w - r),
+      y: clamp((e.clientY - rect.top) / rect.height * H, a.y + r, a.y + a.h - r),
+    };
+  },
+  update(now) {
+    const c = game.collect;
+    const dt = Math.min(0.05, (now - c.lastMs) / 1000);
+    c.lastMs = now;
+    if (c.phase === 'timeup') {
+      if (now - c.endMs > CHALLENGE.timeUpSeconds * 1000) this.finish();
+      return;
+    }
+    if (now - c.startMs >= TIME_LIMIT * 1000) {
+      c.phase = 'timeup'; c.endMs = now; c.target = null; c.moving = false;
+      ui.querySelector('.done-btn').remove();
+      ui.append(el('div', 'bubble timeup-bubble', CHALLENGE_STORY.timeUp));
+      return;
+    }
+    // 이동: 방향키가 우선, 없으면 누른 곳으로
+    const step = CHALLENGE.walkSpeed * speedScaleOf(c.bag) * dt;
+    let dx = 0, dy = 0;
+    const k = c.keys;
+    if (k.size) {
+      dx = (k.has('ArrowRight') ? 1 : 0) - (k.has('ArrowLeft') ? 1 : 0);
+      dy = (k.has('ArrowDown') ? 1 : 0) - (k.has('ArrowUp') ? 1 : 0);
+      c.target = null;
+    } else if (c.target) {
+      dx = c.target.x - c.ayo.x;
+      dy = c.target.y - c.ayo.y;
+    }
+    const len = Math.hypot(dx, dy);
+    c.moving = false;
+    if (len > 0.5) {
+      const mx = dx / len * Math.min(step, c.target ? len : step);
+      const my = dy / len * Math.min(step, c.target ? len : step);
+      // 가로·세로를 따로 움직여서 벽을 따라 미끄러지게 한다
+      const x0 = c.ayo.x, y0 = c.ayo.y;
+      if (!isBlocked(c.ayo.x + mx, c.ayo.y)) c.ayo.x += mx;
+      if (!isBlocked(c.ayo.x, c.ayo.y + my)) c.ayo.y += my;
+      const moved = Math.hypot(c.ayo.x - x0, c.ayo.y - y0);
+      c.moving = moved > 0;
+      // 거의 못 움직이면(벽에 막힘) 멈춘다
+      if (c.target && moved < Math.min(step, len) * 0.15) { c.target = null; c.moving = false; }
+    } else c.target = null;
+
+    // 부품 줍기
+    const R = CHALLENGE.pickupRadius;
+    let touched = null;
+    for (const it of c.items) {
+      const d = Math.hypot(it.x - c.ayo.x, it.y - c.ayo.y);
+      if (it.immune) { if (d > R + 14) it.immune = false; continue; }
+      if (d < R) { touched = it; break; }
+    }
+    if (touched) {
+      const free = c.bag.indexOf(null);
+      if (free >= 0) {
+        c.bag[free] = touched.type;
+        c.items.splice(c.items.indexOf(touched), 1);
+        this.renderBag();
+      } else c.toastUntil = now + 1400;
+    }
+  },
+  draw(now) {
+    this.update(now);
+    if (game.screen !== 'collect') return; // update에서 화면이 넘어간 경우
+    const c = game.collect;
+    drawBg();
+    for (const it of c.items) drawItem(ctx, it.type, it.x, it.y, 1);
+    if (c.target) {
+      ctx.strokeStyle = C.orangeDark; ctx.lineWidth = 5;
+      circle(ctx, c.target.x, c.target.y, 16); ctx.stroke();
+    }
+    this.drawAyoTop(now);
+    this.drawTimer(now);
+    if (now < c.toastUntil) this.drawToast(CHALLENGE_STORY.bagFull);
+    if (c.phase === 'timeup') {
+      ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 6;
+      roundBox(ctx, 400, 250, 1160, 500, 40); ctx.fill(); ctx.stroke();
+      drawHamo(ctx, 'challengeTimeUp', 590, 500, 300, 340);
+    }
+  },
+  // 위에서 본 아요: 머리 위주로 단순하게
+  drawAyoTop(now) {
+    const c = game.collect, a = c.ayo;
+    const y = a.y + (c.moving ? Math.sin(now / 80) * 3 : 0);
+    if (!images.ayo) {
+      ctx.strokeStyle = C.ink; ctx.lineWidth = 10; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(a.x - 16, y + 26); ctx.quadraticCurveTo(a.x - 46, y + 34, a.x - 40, y + 8); ctx.stroke();
+      ctx.strokeStyle = C.orange; ctx.lineWidth = 6; ctx.stroke();
+      ctx.lineCap = 'butt';
+      ctx.beginPath(); ctx.ellipse(a.x, y + 18, 24, 20, 0, 0, Math.PI * 2); fillStroke(ctx, C.orange, 3.5);
+    }
+    drawAyo(ctx, a.x, y - 8, 28);
+    // 무거우면 머리 위에 땀
+    if (c.bag.some(t => t && ITEMS[t].heavy)) {
+      ctx.fillStyle = '#6fc3ec'; ctx.strokeStyle = C.ink; ctx.lineWidth = 2.5;
+      const wob = Math.sin(now / 160) * 3;
+      for (const [dx, dy, s] of [[30, -48, 1], [-30, -52, 0.8]]) {
+        const sx = a.x + dx, sy = y + dy + wob;
+        ctx.beginPath(); ctx.moveTo(sx, sy - 13 * s);
+        ctx.quadraticCurveTo(sx + 10 * s, sy + 3 * s, sx, sy + 7 * s);
+        ctx.quadraticCurveTo(sx - 10 * s, sy + 3 * s, sx, sy - 13 * s);
+        ctx.fill(); ctx.stroke();
+      }
+    }
+  },
+  drawTimer(now) {
+    const c = game.collect;
+    const leftMs = Math.max(0, TIME_LIMIT * 1000 - (c.phase === 'timeup' ? c.endMs - c.startMs : now - c.startMs));
+    const left = Math.ceil(leftMs / 1000);
+    const warn = left <= CHALLENGE.warnSeconds;
+    const blink = warn && Math.floor(now / 300) % 2 === 0;
+    roundBox(ctx, 830, 6, 260, 92, 24);
+    fillStroke(ctx, blink ? '#d8362f' : C.paper, 5);
+    ctx.fillStyle = blink ? '#ffffff' : warn ? '#d8362f' : C.ink;
+    ctx.font = '900 76px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`${left}초`, 960, 56);
+  },
+  drawToast(text) {
+    ctx.font = '800 56px system-ui, sans-serif';
+    const tw = ctx.measureText(text).width + 70;
+    roundBox(ctx, 960 - tw / 2, 330, tw, 92, 24); fillStroke(ctx, '#ffe7c7', 4);
+    ctx.fillStyle = C.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 960, 378);
+  },
+};
+
+// ----- noParts: 비거를 만들 수 없을 때 -----
+screens.noParts = {
+  enter() {
+    setBg('paper');
+    ui.append(el('div', 'bubble noparts-bubble', CHALLENGE_STORY.noParts));
+    ui.append(button('primary big noparts-retry', CHALLENGE_STORY.retry, () => go('collect')));
+    ui.append(button('noparts-home', TEXT.home, goHome));
+  },
+  draw() {
+    drawBg();
+    drawHamo(ctx, 'challengeNoParts', 400, 420, 420, 460);
+  },
+};
+
 // =============================================================
 // 4. 게임 루프와 자동 리셋
 // =============================================================
 function frame(now) {
+  // 모으기 단계에서는 자동 리셋을 하지 않는다
+  if (game.screen === 'collect') game.lastInput = now;
   const scr = screens[game.screen];
   // 60초 동안 입력이 없으면 타이틀로
   if (now - game.lastInput > CONFIG.idleResetSeconds * 1000) {
@@ -923,6 +1512,30 @@ async function boot() {
     window.addEventListener(type, touched, { passive: true });
   }
   window.addEventListener('contextmenu', e => e.preventDefault());
+
+  // 모으기 화면: 터치·클릭(누른 채 끌기 포함)으로 이동
+  ui.addEventListener('pointerdown', e => {
+    if (game.screen !== 'collect' || e.target.closest('button')) return;
+    game.collect.holding = true;
+    screens.collect.pointTo(e);
+  });
+  ui.addEventListener('pointermove', e => {
+    if (game.screen === 'collect' && game.collect.holding) screens.collect.pointTo(e);
+  });
+  for (const type of ['pointerup', 'pointercancel']) {
+    window.addEventListener(type, () => { if (game.collect) game.collect.holding = false; });
+  }
+  // 모으기 화면: PC 방향키
+  const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+  window.addEventListener('keydown', e => {
+    touched();
+    if (game.screen === 'collect' && ARROWS.includes(e.key)) {
+      e.preventDefault();
+      game.collect.keys.add(e.key);
+    }
+  });
+  window.addEventListener('keyup', e => { if (game.collect) game.collect.keys.delete(e.key); });
+  window.addEventListener('blur', () => { if (game.collect) game.collect.keys.clear(); });
 
   game.lastInput = performance.now();
   await preload();

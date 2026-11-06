@@ -132,7 +132,7 @@ html, body {
 .title-sign {
   left: 0.9rem;
   top: 1rem;
-  width: 31.8rem;
+  width: 29.8rem;
   padding: 0.8rem 1rem;
   text-align: center;
   font-size: 3rem;
@@ -142,9 +142,11 @@ html, body {
 .top-panel {
   right: 0.9rem;
   top: 1rem;
-  width: 13.5rem;
+  width: 16rem;
   padding: 0.7rem 0.9rem;
 }
+.top-cols { display: grid; grid-template-columns: 1fr 1fr; column-gap: 0.7rem; }
+.top-cols h3 { font-size: 1.2rem; font-weight: 800; line-height: 1.3; margin-bottom: 0.15rem; white-space: nowrap; }
 .top-panel h2 {
   font-size: 1.3rem;
   font-weight: 800;
@@ -157,18 +159,65 @@ html, body {
   justify-content: space-between;
   padding: 0.12rem 0;
   border-top: 0.08rem solid var(--line);
-  font-size: 1.3rem;
+  font-size: 1.2rem;
   font-weight: 700;
+  white-space: nowrap;
 }
 .top-panel .rank { color: var(--ink-soft); font-weight: 600; }
-.top-panel .empty { font-size: 1.25rem; color: var(--ink-soft); }
+.top-panel .empty { font-size: 1.2rem; color: var(--ink-soft); }
 .title-bubble { left: 11.4rem; top: 8.4rem; width: 13.4rem; }
 .start-btn {
-  left: 15rem;
-  top: 21.4rem;
-  width: 18rem;
-  min-height: 4.6rem;
+  flex-direction: column;
+  top: 21.2rem;
+  min-height: 4.8rem;
+  font-size: 1.9rem;
+  line-height: 1.15;
+  padding: 0.2rem 0.6rem;
 }
+.start-btn small { font-size: 1.35rem; font-weight: 700; }
+.start-easy { left: 11.6rem; width: 17.4rem; }
+.start-hard { left: 29.6rem; width: 17.4rem; background: #9fd8d2; }
+
+/* ----- 도전 모드 소개 ----- */
+.intro-bubble { left: 12rem; width: 32rem; min-height: 6.6rem; font-size: 1.8rem; }
+.intro-bubble.first { top: 3rem; }
+.intro-bubble.second { top: 12rem; }
+
+/* ----- 부품 모으기 ----- */
+#ui.collecting { touch-action: none; }
+.bag-row {
+  position: absolute;
+  left: 0.9rem;
+  top: 22.95rem;
+  display: flex;
+  gap: 0.3rem;
+}
+.bag-slot {
+  width: 6.4rem;
+  height: 3.8rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+  border: 0.15rem solid var(--ink);
+  border-radius: 0.8rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.bag-slot.empty { background: var(--paper-deep); border-style: dashed; color: var(--ink-soft); }
+.bag-slot canvas { width: 3rem; height: 2rem; display: block; }
+.bag-slot span { font-size: 1.2rem; font-weight: 800; line-height: 1.2; }
+.done-btn { left: 34.5rem; top: 22.95rem; width: 12.6rem; min-height: 3.8rem; font-size: 1.7rem; }
+.timeup-bubble { left: 18.6rem; top: 8.2rem; width: 19.4rem; font-size: 1.8rem; min-height: 8.6rem; }
+
+/* ----- 부품이 모자랄 때 ----- */
+.noparts-bubble { left: 18rem; top: 6.4rem; width: 26rem; min-height: 8rem; font-size: 2rem; }
+.noparts-retry { left: 7rem; top: 21.3rem; width: 21rem; min-height: 4.4rem; }
+.noparts-home { left: 29rem; top: 21.3rem; width: 12rem; min-height: 4.4rem; }
 
 /* ----- 이야기 ----- */
 .story-bubble { left: 15rem; top: 4rem; width: 28.5rem; min-height: 9.2rem; font-size: 1.9rem; }
@@ -233,6 +282,26 @@ html, body {
   font-weight: 900;
   color: var(--orange-deep);
 }
+.card:disabled { background: #e9e6df; border-color: #cfcabf; cursor: default; color: #77736a; }
+.card:disabled canvas { opacity: 0.45; }
+.trap-note {
+  position: absolute;
+  left: 1.2rem;
+  top: 12.2rem;
+  width: 18.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.6rem;
+  background: #e9e6df;
+  border: 0.12rem solid #9b968a;
+  border-radius: 0.7rem;
+  color: #5d5a52;
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.trap-note canvas { width: 2.4rem; height: 1.6rem; flex: none; opacity: 0.7; }
 .build-bubble { left: 6.4rem; top: 15.7rem; width: 13.8rem; min-height: 4.6rem; font-size: 1.3rem; padding: 0.5rem 0.8rem; }
 .fly-btn { left: 1.2rem; top: 21.5rem; width: 18.6rem; min-height: 4.6rem; }
 
@@ -299,33 +368,60 @@ html, body {
 .row-val { justify-content: center; font-weight: 600; }
 .row-val.now { font-weight: 900; background: #ffe7c7; }
 
+/* 도전 모드 결과: 설명이 두 줄이라 그래프를 줄이고 말풍선을 넓힌다 */
+.result-challenge .grade { line-height: 1.1; }
+.result-challenge .distance { font-size: 5.2rem; top: 3.7rem; line-height: 1.15; }
+.result-challenge .distance small { font-size: 2.6rem; }
+.goal-line { left: 1.2rem; top: 9.8rem; width: 20rem; font-size: 1.5rem; font-weight: 800; line-height: 1.3; }
+.chart.compact { height: 13rem; }
+.chart.compact .bar-cell { height: 5.2rem; }
+.chart.compact .row-head, .chart.compact .row-val { height: 1.5rem; }
+.challenge-bubble {
+  left: 7rem;
+  top: 14.1rem;
+  width: 39.8rem;
+  min-height: 7.6rem;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.3rem;
+  font-size: 1.3rem;
+  padding: 0.3rem 1rem;
+  line-height: 1.3;
+}
+.challenge-bubble.ok { font-size: 2rem; font-weight: 800; }
+.challenge-bubble .extra { font-weight: 800; color: #a8432e; }
+.c-retry { left: 1.2rem; top: 22.2rem; width: 19.8rem; min-height: 4rem; }
+.c-quiz { left: 21.6rem; top: 22.2rem; width: 12.3rem; min-height: 4rem; }
+.c-home { left: 34.5rem; top: 22.2rem; width: 12.3rem; min-height: 4rem; }
+
 /* ----- 퀴즈 ----- */
 .quiz-q {
   left: 17.5rem;
-  top: 1.2rem;
+  top: 0.8rem;
   width: 29rem;
   min-height: 7.4rem;
-  padding: 0.6rem 1rem;
+  padding: 0.3rem 1rem;
   display: flex;
   align-items: center;
-  font-size: 2.1rem;
+  font-size: 1.85rem;
   font-weight: 800;
-  line-height: 1.3;
+  line-height: 1.25;
 }
-.quiz-a { left: 17.5rem; top: 9.4rem; width: 29rem; min-height: 4.2rem; font-size: 1.8rem; }
-.quiz-b { left: 17.5rem; top: 14.2rem; width: 29rem; min-height: 4.2rem; font-size: 1.8rem; }
+.quiz-a { left: 17.5rem; top: 9.2rem; width: 29rem; min-height: 3.8rem; font-size: 1.7rem; }
+.quiz-b { left: 17.5rem; top: 13.5rem; width: 29rem; min-height: 3.8rem; font-size: 1.7rem; }
 .btn.is-right { background: #d5efc0; }
 .btn.is-wrong { background: #f7d4c8; }
 .btn.is-off { opacity: 0.45; }
-.quiz-bubble { left: 1.2rem; top: 18.7rem; width: 45.6rem; min-height: 3.3rem; padding: 0.3rem 1rem; font-size: 1.5rem; }
+.quiz-bubble { left: 1.2rem; top: 18.2rem; width: 45.6rem; min-height: 3.3rem; padding: 0.2rem 1rem; font-size: 1.35rem; line-height: 1.3; }
 .quiz-bubble::before {
   left: 7rem;
   top: 0;
   margin-top: -0.65rem;
   transform: rotate(135deg);
 }
-.quiz-home { left: 1.2rem; top: 22.4rem; width: 16rem; min-height: 3.8rem; }
-.quiz-again { left: 17.8rem; top: 22.4rem; width: 29rem; min-height: 3.8rem; }
+.quiz-home { left: 1.2rem; top: 22.6rem; width: 16rem; min-height: 3.8rem; }
+.quiz-again { left: 17.8rem; top: 22.6rem; width: 29rem; min-height: 3.8rem; }
 
 /* ----- 세로 화면 안내 ----- */
 #rotate-hint {

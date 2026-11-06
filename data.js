@@ -119,6 +119,16 @@ const QUIZ = [
     right: '맞아! 뒤가 무거우면 뒤로 뒤집혀서 떨어져.',
     wrong: '아쉬워! 뒤가 무거우면 뒤로 뒤집혀. 무게추는 가운데가 좋아.',
   },
+  {
+    mode: 'challenge', // 도전 모드에서만 나오는 문제
+    question: '가방이 작을 때는 어떻게 해야 할까?',
+    choices: [
+      { text: '꼭 필요한 것부터 챙겨요', correct: true },
+      { text: '아무거나 빨리 담아요', correct: false },
+    ],
+    right: '맞아! 꼭 필요한 것부터 담으면 비거를 잘 만들 수 있어.',
+    wrong: '아쉬워! 아무거나 담으면 꼭 필요한 부품이 들어갈 자리가 없어.',
+  },
 ];
 
 // ----- 하모 이미지(assets/hamo/ 안의 파일 이름) -----
@@ -135,16 +145,24 @@ const HAMO_IMG = {
   quiz: 'study.png',        // 퀴즈
   quizRight: 'face_smile.png', // 퀴즈 정답
   quizWrong: 'face_cry.png',   // 퀴즈 오답
+  challengeStart: 'face_wow.png',    // 도전 모드 소개 첫 줄
+  challengeBag: 'face_smile.png',    // 도전 모드 소개 둘째 줄
+  challengeTimeUp: 'face_shock.png', // 시간 끝
+  challengeNoParts: 'face_cry.png',  // 부품이 모자랄 때
+  challengeSuccess: 'face_wow.png',  // 소식 전달 성공
 };
 
 // ----- 화면 문구 -----
 const TEXT = {
   title: '아요의 비거 날리기',
-  start: '시작하기',
+  startEasy: '쉬운 모드',
+  startEasySub: '바로 만들기',
+  startChallenge: '도전 모드',
+  startChallengeSub: '진주성 60초',
   titleHello: '안녕! 나는 하모야. 아요랑 비거를 날려 보자!',
   titleBye: '고마워! 또 놀러 와!',
-  topTitle: '오늘의 최고 기록 TOP 5',
-  topEmpty: '아직 기록이 없어요. 첫 기록을 세워 봐!',
+  topTitle: '오늘의 최고 기록 TOP 5', //  : TOP과 5가 줄바꿈으로 갈라지지 않게 하는 띄어쓰기
+  topEmpty: '아직 없어요',
   storyNext: '비거 만들러 가기',
   buildHello: '부품을 고르면 비거 모양이 바뀌어!',
   buildRetry: '이번엔 뭘 바꿔 볼까?',
@@ -162,4 +180,87 @@ const TEXT = {
   river: '남강',
   castle: '진주성',
   rulerUnit: '거리(m)',
+  goalFlag: '아군 진영',
+};
+
+// =============================================================
+// 도전 모드: 진주성 60초
+// =============================================================
+const BAG_SIZE = 5;          // 가방 칸 수
+const TIME_LIMIT = 60;       // 부품 모으기 제한 시간(초)
+const SUCCESS_DISTANCE = 100; // 소식 전달에 성공하는 비행 거리(m)
+
+const CHALLENGE = {
+  walkSpeed: 170,        // 아요 걷는 속도(화면 1920 기준 초당 픽셀)
+  heavySlowEach: 0.2,    // 무거운 물건 하나당 줄어드는 속도
+  minSpeedScale: 0.4,    // 아무리 무거워도 이 비율 아래로는 안 느려짐
+  pickupRadius: 50,      // 이 거리 안에 들어오면 부품을 줍는다(픽셀)
+  ayoRadius: 28,         // 벽·건물에 부딪히는 아요 크기(픽셀)
+  warnSeconds: 10,       // 남은 시간이 이 아래면 타이머가 빨개짐
+  timeUpSeconds: 2.6,    // "시간 끝!" 안내를 보여 주는 시간(초)
+  noStringLift: 0.85,    // 끈이 없을 때 들어 올리는 힘 배율
+  wingNeedPaper: { small: 1, normal: 2, big: 3 }, // 날개별 필요한 한지 수
+  defaultBallast: 'front', // 조립 화면의 첫 무게추 위치
+  start: { x: 960, y: 450 }, // 아요 출발 위치
+  walkArea: { x: 105, y: 145, w: 1710, h: 640 }, // 성벽 안쪽, 걸어 다닐 수 있는 곳
+};
+
+// 장소 5곳(x, y, w, h는 화면 1920×1080 기준 위치와 크기, 건물은 지나갈 수 없음)
+const MAP_PLACES = [
+  { id: 'forest',  name: '대나무숲', kind: 'forest', color: '#8fbf6a', x: 120,  y: 150, w: 340, h: 170 },
+  { id: 'storage', name: '창고',     kind: 'house',  color: '#b89a78', x: 760,  y: 150, w: 400, h: 170 },
+  { id: 'carpenter', name: '목공소', kind: 'house',  color: '#d3a878', x: 1460, y: 150, w: 340, h: 170 },
+  { id: 'paper',   name: '한지 공방', kind: 'house', color: '#f3ead6', x: 120,  y: 590, w: 340, h: 195 },
+  { id: 'smithy',  name: '대장간',   kind: 'house',  color: '#9aa3ab', x: 1460, y: 590, w: 340, h: 195 },
+];
+
+// 부품이 없는 장식 건물(지나갈 수 없음)
+const MAP_DECOR = [
+  { id: 'pavilion', name: '촉석루', kind: 'pavilion', color: '#5e8a84', x: 790, y: 610, w: 340, h: 175 },
+];
+
+// 부품: name = 이름, spots = 놓인 위치, heavy = 무거워서 느려짐
+// use = 용도(body 몸통 / wing 날개 / string 끈 / trap 비거에 못 씀)
+const ITEMS = {
+  bamboo: { name: '대나무', use: 'body',   bodyKey: 'bamboo', heavy: false, spots: [[210, 370], [350, 370]] },
+  wood:   { name: '나무판', use: 'body',   bodyKey: 'wood',   heavy: false, spots: [[1560, 370], [1700, 370]] },
+  iron:   { name: '쇠',     use: 'body',   bodyKey: 'iron',   heavy: true,  spots: [[1560, 545], [1700, 545]] },
+  paper:  { name: '한지',   use: 'wing',   heavy: false, spots: [[150, 545], [270, 545], [390, 545], [510, 545]] },
+  string: { name: '끈',     use: 'string', heavy: false, spots: [[780, 370], [880, 370]] },
+  jar:    { name: '항아리', use: 'trap',   heavy: true,  spots: [[1040, 370]] },
+  pot:    { name: '솥',     use: 'trap',   heavy: true,  spots: [[1140, 370]] },
+};
+
+// 도전 모드 문구
+const CHALLENGE_STORY = {
+  intro: [
+    { hamo: 'challengeStart', text: '성 밖에 소식을 전해야 해! 60초 안에 부품을 모아서 비거를 만들자!' },
+    { hamo: 'challengeBag', text: '가방에는 5개까지만 담을 수 있어. 잘 골라야 해!' },
+  ],
+  startButton: '시작!',
+  doneButton: '다 모았어!',
+  bagFull: '가방이 꽉 찼어!',
+  emptySlot: '빈 칸',
+  timeUp: '시간 끝! 모은 부품으로 비거를 만들자!',
+  noParts: '부품이 모자라… 다시 모아 볼까?',
+  retry: '다시 도전',
+  retryFull: '다시 도전(60초부터)',
+  buildHello: '모은 부품으로 비거를 만들어 보자!',
+  noString: '끈이 없어서 날개가 흔들려요',
+  trapNote: '이건 비거에 쓸 수 없어요',
+  needPaper: '한지 {n}개',
+  noMaterial: '없음',
+  successTitle: '성공!',
+  success: '소식 전달 성공! 진주성을 도왔어!',
+  goalReached: '목표 {goal}m 도착!',
+  goalLeft: '목표 {goal}m까지 {left}m 남았어!',
+};
+
+// 도전 모드 실패 시 하모의 한 마디(규칙은 game.js의 challengeFeedbackKey, 위에서부터 먼저 맞는 것 하나)
+// 어느 것도 맞지 않으면 기존 FEEDBACK만 나옵니다.
+const CHALLENGE_FEEDBACK = {
+  trap: '항아리랑 솥은 비거에 쓸 수 없었어. 꼭 필요한 것만 담아 보자!',
+  ironNoBamboo: '대나무를 못 가져와서 무거운 쇠로 만들었네. 다음엔 대나무숲부터 가 보자!',
+  littlePaper: '한지가 더 있었으면 날개를 크게 만들 수 있었어!',
+  noString: '끈이 없어서 날개가 흔들렸어. 창고에 끈이 있었지?',
 };
