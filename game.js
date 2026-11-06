@@ -354,7 +354,7 @@ function partsFromBag(bag, empties = 0, stage = null) {
   // 튼튼한 대나무가 있으면 그것을 쓰고, 금 간 대나무만 있을 때 흔들린다
   const crackedOnly = count('crackedBamboo') > 0 && count('bamboo') === 0;
   const minNeed = Math.min(...Object.values(CHALLENGE.wingNeedPaper));
-  return { paper, torn, bodies, hasString, crackedOnly, empties, traps, canBuild: paper >= minNeed && bodies.length > 0 };
+  return { paper, torn, bodies, hasString, crackedOnly, empties, traps, canAsk: !stage || !!stage.hintVillager, canBuild: paper >= minNeed && bodies.length > 0 };
 }
 
 function wingUnlocked(parts, wingKey) { return parts.paper >= CHALLENGE.wingNeedPaper[wingKey]; }
@@ -380,7 +380,7 @@ function challengeFeedbackKey(parts, pick) {
   if (parts.torn > 0) return 'tornPaper';
   if (parts.traps && parts.traps.includes('jar')) return 'jarHeld';
   if (parts.traps && parts.traps.includes('pot')) return 'potHeld';
-  if (parts.empties >= CHALLENGE.manyEmptyAt) return 'manyEmpty';
+  if (parts.canAsk && parts.empties >= CHALLENGE.manyEmptyAt) return 'manyEmpty';
   if (parts.paper < CHALLENGE.wingNeedPaper.big) return 'littlePaper';
   if (!parts.hasString) return 'noString';
   return null;
@@ -405,6 +405,16 @@ function shortestTour(dist, stops) {
   return ans;
 }
 
+// 발사대에서 (dx, dy)만큼 끌었을 때(화면 좌표, 오른쪽·아래가 +)의 각도와 세기
+// 왼쪽 수평 = 최적 각도, 아래로 기울수록 높아지고 위로 기울수록 낮아짐. 오른쪽으로 밀면 cancel
+function aimFromPull(dx, dy) {
+  const K = CONTROL, pull = Math.hypot(dx, dy);
+  const power = K.minPower + (1 - K.minPower) * clamp(pull / K.maxPull, 0, 1);
+  if (dx >= 0) return { cancel: pull > 0, angle: K.optAngle, power, pull };
+  const tilt = Math.atan2(dy, -dx) * 180 / Math.PI;
+  return { cancel: false, angle: clamp(K.optAngle + tilt * K.pullAngleScale, K.minAngle, K.maxAngle), power, pull };
+}
+
 // 단계에서의 비행. drums를 주면 그때 두드린 것으로 계산. 1단계는 자동 발사, 그 외는 최적 발사로 본다
 function stageFlight(stage, parts, pick, drums) {
   const ctl = { thermal: true, drums: drums || [] };
@@ -425,6 +435,7 @@ function runChallengeCombos() {
       { bag: [B, P, P, Wd],      wing: 'normal', body: 'bamboo', ballast: 'center', must: 'ok' },
       { bag: [B, P],             wing: 'small',  body: 'bamboo', ballast: 'center', must: 'fail', fb: 'littlePaper' },
       { bag: [Wd, P, P],         wing: 'normal', body: 'wood',   ballast: 'center', must: 'fail', fb: 'littlePaper' },
+      { bag: [Wd, P, P],         wing: 'normal', body: 'wood',   ballast: 'center', must: 'fail', empties: 2, fb: 'littlePaper' }, // 마을 사람이 없으니 물어보라고 하지 않음
       { bag: [B, P, P],          wing: 'normal', body: 'bamboo', ballast: 'front',  must: 'fail' },
       { bag: [B, P, P],          wing: 'normal', body: 'bamboo', ballast: 'back',   must: 'fail' },
       { bag: [P, P, P],          must: 'cannot' },
@@ -532,8 +543,14 @@ function runChallengeCombos() {
     for (let seed = 1; seed <= seedsChecked; seed++) {
       const loot = shuffleLoot(seed, stage);
       const at = t => allStops.filter(i => loot[i - 1] === t);
-      const stops = [...at('bamboo'), ...at('string'), ...at('paper')];
-      const sec = shortestTour(dist, stops) / CHALLENGE.walkSpeed + stops.length * (searchSeconds + decisionSeconds);
+      const papers = at('paper'), need = CHALLENGE.wingNeedPaper.big;
+      let sec = Infinity;
+      for (let mask = 0; mask < 1 << papers.length; mask++) { // 한지가 더 많으면 가까운 것만 고른다
+        const pick = papers.filter((_, i) => mask & (1 << i));
+        if (pick.length !== need) continue;
+        const stops = [...at('bamboo'), ...at('string'), ...pick];
+        sec = Math.min(sec, shortestTour(dist, stops) / CHALLENGE.walkSpeed + stops.length * (searchSeconds + decisionSeconds));
+      }
       worst = Math.max(worst, sec); sum += sec;
     }
     if (worst > TIME_LIMIT) problems.push(`${tag}: 최적 가방이 ${worst.toFixed(1)}초 걸리는 배치가 있음`);
@@ -618,6 +635,34 @@ function runControlTest() {
       if (fl.distance > CONFIG.world.rulerMax) problems.push(`${d.설계} ${angle}도 ${drums.length}번: ${fl.distance}m(눈금 초과)`);
     }
   }
+  // 실제 당기기 경우: 수평 끝까지, 수평 절반, 왼쪽 위, 왼쪽 아래 45도
+  const M = CONTROL.maxPull;
+  const pulls = [
+    ['수평으로 끝까지', -M, 0], ['수평으로 절반', -M / 2, 0],
+    ['왼쪽 위로 끝까지', -M * Math.cos(Math.PI / 6), -M * Math.sin(Math.PI / 6)],
+    ['왼쪽 아래 45도 끝까지', -M * Math.SQRT1_2, M * Math.SQRT1_2],
+  ];
+  const pullRows = [];
+  for (const d of designs) {
+    const noCtl = simulateFlight(d.wing, d.body, d.ballast);
+    for (const [name, dx, dy] of pulls) {
+      const a = aimFromPull(dx, dy);
+      const fl = simulateFlight(d.wing, d.body, d.ballast, 1, { angle: a.angle, power: a.power, thermal: true, drums: [] });
+      pullRows.push({ 설계: d.설계, 당기기: name, 각도: Math.round(a.angle), 세기: +a.power.toFixed(2), '거리(m)': fl.distance, '자동 비행(m)': noCtl.distance, 결과: fl.crashed ? '추락' : GRADE_TEXT[fl.grade] });
+      if (d.body === 'iron' && !fl.crashed) problems.push(`쇠 몸통 ${name}: 추락해야 함`);
+    }
+  }
+  {
+    const full = aimFromPull(-M, 0), half = aimFromPull(-M / 2, 0), up = aimFromPull(-100, -50), down = aimFromPull(-M, M);
+    if (full.angle !== CONTROL.optAngle || full.power !== 1) problems.push('수평 끝까지가 최적 각도·최대 세기가 아님');
+    if (Math.abs(down.angle - 57) > 0.1) problems.push(`왼쪽 아래 45도가 ${down.angle.toFixed(1)}도(약 57도여야 함)`);
+    if (up.angle >= CONTROL.optAngle) problems.push('왼쪽 위로 당기면 각도가 낮아져야 함');
+    if (half.angle !== CONTROL.optAngle || !(half.power < 1)) problems.push('수평 절반은 각도가 같고 세기만 약해야 함');
+    if (!aimFromPull(50, 0).cancel || !aimFromPull(50, 40).cancel) problems.push('오른쪽으로 밀면 취소되어야 함');
+    if (aimFromPull(-M, -M * 5).angle !== CONTROL.minAngle || aimFromPull(-1, M).angle !== CONTROL.maxAngle) problems.push('각도가 10~60도로 제한되지 않음');
+    const best = simulateFlight('big', 'bamboo', 'center', 1, { angle: full.angle, power: full.power, thermal: true }).distance;
+    if (best < simulateFlight('big', 'bamboo', 'center').distance) problems.push('최적 설계 + 수평 끝까지가 자동 비행보다 짧음');
+  }
   const dist = (w, b, bl, ctl) => simulateFlight(w, b, bl, 1, ctl).distance;
   const auto = dist('big', 'bamboo', 'center');
   const best = dist('big', 'bamboo', 'center', { angle: CONTROL.optAngle, power: 1, thermal: true, drums: DR });
@@ -651,10 +696,11 @@ function runControlTest() {
   const designRange = auto - simulateFlight('small', 'wood', 'center').distance;
   const summary = { '자동(m)': auto, '최적 조종(m)': best, '자동 대비(%)': +(gain * 100).toFixed(1), '가장 못 쏜 경우(m)': worstCtl, '설계 차이(m, 큰+대나무 - 작은+나무판)': designRange };
   console.table(rows);
+  console.table(pullRows);
   console.table([summary]);
   if (problems.length) console.warn('문제 ' + problems.length + '건:\n' + problems.join('\n'));
   else console.log('조종 검사 통과');
-  return { rows, problems, summary };
+  return { rows, pullRows, problems, summary };
 }
 
 // =============================================================
@@ -796,7 +842,8 @@ const sfx = {
       o.type = type || 'sine';
       o.frequency.setValueAtTime(freq, t);
       if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + seconds);
-      v.gain.setValueAtTime(volume || 0.2, t);
+      // 기본값의 2배에 SFX_VOLUME을 곱하고 최대 크기로 제한
+      v.gain.setValueAtTime(Math.max(0.001, Math.min(SFX_MAX_GAIN, (volume || 0.2) * 2 * SFX_VOLUME)), t);
       v.gain.exponentialRampToValueAtTime(0.001, t + seconds);
       o.connect(v); v.connect(this.ctx.destination);
       o.start(t); o.stop(t + seconds);
@@ -822,21 +869,59 @@ const sfx = {
 // 말풍선 읽어주기: 지원하지 않는 환경이면 조용히 넘어간다
 // =============================================================
 const canSpeak = () => typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined';
-let lastSpoken = '';
+let lastSpoken = '', speakTimer = 0, firstInputDone = false, pendingSpeech = '', voicesKnown = false;
+const koVoices = () => { try { return window.speechSynthesis.getVoices().filter(v => /^ko/i.test(v.lang || '')); } catch (e) { return []; } };
 function speak(text) {
   if (!settings.speak || !canSpeak() || !text) return;
+  lastSpoken = text;
+  // 브라우저는 처음 누르기 전의 음성을 막으므로 기억해 뒀다가 첫 터치 때 읽는다
+  if (!firstInputDone) { pendingSpeech = text; return; }
   try {
     window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'ko-KR';
-    u.rate = 0.95;
-    window.speechSynthesis.speak(u);
-    lastSpoken = text;
+    clearTimeout(speakTimer);
+    speakTimer = setTimeout(() => {
+      try {
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'ko-KR';
+        u.rate = 0.95;
+        const ko = koVoices();
+        try { if (ko.length) u.voice = ko[0]; } catch (e) { /* lang만으로 읽음 */ }
+        window.speechSynthesis.speak(u);
+      } catch (e) { /* 무시 */ }
+    }, SPEECH_DELAY_MS);
   } catch (e) { /* 무시 */ }
 }
 function stopSpeaking() {
+  clearTimeout(speakTimer);
   if (!canSpeak()) return;
   try { window.speechSynthesis.cancel(); } catch (e) { /* 무시 */ }
+}
+// 처음 누르거나 키를 누른 순간: 소리를 켜고, 기다리던 말풍선을 읽고, 상태를 한 번 기록한다
+function onFirstInput() {
+  sfx.ensure();
+  if (firstInputDone) return;
+  firstInputDone = true;
+  if (pendingSpeech) { const text = pendingSpeech; pendingSpeech = ''; speak(text); }
+  setTimeout(logSoundState, 600);
+}
+function logSoundState() {
+  const voices = canSpeak() ? window.speechSynthesis.getVoices().map(v => `${v.name} (${v.lang})`) : [];
+  console.log('[소리 확인] AudioContext:', sfx.ctx ? sfx.ctx.state : '없음', '/ 음성 ' + voices.length + '개:', voices.join(', ') || '(없음)');
+}
+// 타이틀: 한국어 음성이 없으면 작은 글씨로 알린다(목록을 다 받은 뒤에만)
+function refreshVoiceNote() {
+  if (game.screen !== 'title' || !ui) return;
+  const old = ui.querySelector('.voice-note');
+  const need = VOICE_NOTE.show && canSpeak() && voicesKnown && koVoices().length === 0;
+  if (need && !old) ui.append(el('p', 'abs voice-note', VOICE_NOTE.text));
+  else if (!need && old) old.remove();
+}
+function watchVoices() {
+  if (!canSpeak()) return;
+  const done = () => { voicesKnown = true; refreshVoiceNote(); };
+  try { window.speechSynthesis.addEventListener('voiceschanged', done); } catch (e) { /* 무시 */ }
+  if (koVoices().length) done();
+  setTimeout(done, VOICE_NOTE.waitSeconds * 1000);
 }
 function bubbleText(n) {
   const ps = n.querySelectorAll('p');
@@ -1625,6 +1710,8 @@ function go(name, arg) {
   game.tut = null;
   lastSpoken = '';
   ui.replaceChildren();
+  // 비행 화면에서는 터치 끌기가 스크롤로 끊기지 않게 한다
+  document.getElementById('stage').classList.toggle('flying', name === 'flight');
   ui.className = '';
   screens[name].enter(arg);
   if (name !== 'title' && game.screen === name) ui.append(homeButton());
@@ -1743,6 +1830,7 @@ screens.title = {
     ui.append(twoLineButton('start-btn start-hard', TEXT.startChallenge, TEXT.startChallengeSub, startChallenge, 'star'));
     const n = loadRecords().length;
     ui.append(button('records-btn', `${RECORD_TEXT.bookButton} (${n}/${RECORD_CARDS.length})`, () => go('records'), 'book'));
+    refreshVoiceNote();
   },
   // 쉬운 모드 조종 / 소리 / 읽어주기
   toggleRow() {
@@ -1999,7 +2087,7 @@ screens.flight = {
       this.phase = 'aim';
       this.aim = { angle: K.startAngle, power: K.startPower, active: false, dragging: false, pull: 0, previewKey: '', preview: [] };
       this.aimStart = performance.now();
-      showTutorial('pull', px(0) - 150, py(CONFIG.flight.launchHeight) + 90);
+      showTutorial('pull', px(0) - 120, py(CONFIG.flight.launchHeight) + 40);
     } else {
       this.launch();
     }
@@ -2029,31 +2117,40 @@ screens.flight = {
   },
 
   // ----- 조준 -----
-  pointerDown(x, y) {
+  pointerDown(x, y, e) {
     if (this.phase === 'fly') { this.tapDrum(); return; }
     const ox = px(0), oy = py(CONFIG.flight.launchHeight);
     if (Math.hypot(x - ox, y - oy) > 230) return; // 비거 근처를 눌러야 잡힘
+    // 손가락이 화면 밖으로 나가도 놓을 때까지 받는다
+    try { if (e) ui.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
     this.aim.dragging = true;
     this.aim.active = true;
     this.aimStart = performance.now();
     this.dragTo(x, y);
   },
   dragTo(x, y) {
-    const K = CONTROL, a = this.aim, ox = px(0), oy = py(CONFIG.flight.launchHeight);
+    const a = this.aim, ox = px(0), oy = py(CONFIG.flight.launchHeight);
     if (!a.dragging) return;
     this.aimStart = performance.now();
-    const dx = ox - x, dy = y - oy; // 왼쪽 아래로 끌수록 오른쪽 위로 쏜다
-    const len = Math.hypot(dx, dy);
-    a.pull = len;
-    if (len > 8) a.angle = clamp(Math.atan2(dy, Math.max(dx, 0.001)) * 180 / Math.PI, K.minAngle, K.maxAngle);
-    a.power = K.minPower + (1 - K.minPower) * clamp(len / K.maxPull, 0, 1);
+    const aim = aimFromPull(x - ox, y - oy);
+    a.pull = aim.pull;
+    a.cancel = aim.cancel;
+    a.active = !aim.cancel; // 오른쪽으로 밀면 발사 취소
+    if (aim.cancel) return;
+    a.power = aim.power;
+    if (aim.pull > 8) a.angle = aim.angle;
   },
   pointerUp() {
     const a = this.aim;
     if (!a || !a.dragging) return;
     a.dragging = false;
-    if (a.pull < CONTROL.minPull) { a.active = false; return; } // 살짝 끌면 발사하지 않음
+    if (a.cancel || a.pull < CONTROL.minPull) { a.active = false; a.cancel = false; return; } // 살짝 끌거나 앞으로 밀면 발사하지 않음
     this.launch(a.angle, a.power);
+  },
+  // 터치가 끊기면 발사하지 않고 처음으로
+  cancelDrag() {
+    const a = this.aim;
+    if (a && a.dragging) { a.dragging = false; a.active = false; a.cancel = false; }
   },
   key(k) {
     const K = CONTROL;
@@ -2082,9 +2179,11 @@ screens.flight = {
       haloText(ctx, deg + '°', ox + Math.cos(r) * 232, oy - Math.sin(r) * 232);
     }
     ctx.fillStyle = C.ink;
-    const r = a.angle * Math.PI / 180;
-    const back = a.active ? clamp((a.power - K.minPower) / (1 - K.minPower), 0, 1) * 95 + 15 : 0;
-    const bx = ox - Math.cos(r) * back, by = oy + Math.sin(r) * back;
+    // 비거는 손가락이 있는 쪽으로 끌려간다(각도에서 끈 방향을 되짚음)
+    const strength = clamp((a.power - K.minPower) / (1 - K.minPower), 0, 1);
+    const tilt = (a.angle - K.optAngle) / K.pullAngleScale * Math.PI / 180;
+    const back = a.active ? strength * 95 + 15 : 0;
+    const bx = ox - Math.cos(tilt) * back, by = oy + Math.sin(tilt) * back;
     if (a.active) {
       // 예상 궤적(앞부분만)
       const key = Math.round(a.angle) + '/' + a.power.toFixed(2);
@@ -2106,13 +2205,17 @@ screens.flight = {
       ctx.strokeStyle = this.powerColor(a.power); ctx.lineWidth = 9; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(ox + 26, oy + 34); ctx.lineTo(bx, by + 10); ctx.lineTo(ox - 66, oy + 28); ctx.stroke();
       ctx.lineCap = 'butt';
-      ctx.fillStyle = C.ink; ctx.font = '900 56px system-ui, sans-serif'; ctx.textAlign = 'left';
-      haloText(ctx, Math.round(a.angle) + '°', ox + 260, oy - 150);
+      // 현재 각도와 세기 막대
+      const rx = ox + 270, ry = oy - 158, rw = 300;
+      ctx.fillStyle = C.ink; ctx.font = '900 92px system-ui, sans-serif'; ctx.textAlign = 'left';
+      haloText(ctx, Math.round(a.angle) + '°', rx, ry);
+      roundBox(ctx, rx, ry + 54, rw, 44, 14); fillStroke(ctx, C.paper, 4);
+      if (strength > 0.01) { roundBox(ctx, rx + 5, ry + 59, (rw - 10) * strength, 34, 10); ctx.fillStyle = this.powerColor(a.power); ctx.fill(); }
     }
     // 오래 가만히 있으면 손가락 안내
     if (!a.dragging && now - this.aimStart > K.idleHintSeconds * 1000 && !game.tut) {
       const t = ((now - this.aimStart) % 1400) / 1400, k = t < 0.7 ? t / 0.7 : 1;
-      drawFinger(ctx, ox - 110 * k, oy + 64 * k + 10, 1.5);
+      drawFinger(ctx, ox - 130 * k, oy + 16, 1.5);
       ctx.fillStyle = C.ink; ctx.font = '900 64px system-ui, sans-serif'; ctx.textAlign = 'center';
       haloText(ctx, CONTROL_TEXT.pullHint, 960, 200);
     }
@@ -3231,7 +3334,7 @@ async function boot() {
   window.addEventListener('contextmenu', e => e.preventDefault());
 
   // 처음 누를 때 소리를 켠다. 읽어주는 중에 누르면 멈춘다
-  window.addEventListener('pointerdown', () => { sfx.ensure(); stopSpeaking(); }, { passive: true });
+  window.addEventListener('pointerdown', () => { stopSpeaking(); onFirstInput(); }, { passive: true });
 
   const toLogical = e => {
     const rect = ui.getBoundingClientRect();
@@ -3242,20 +3345,19 @@ async function boot() {
     const scr = screens[game.screen];
     if (!scr.pointerDown || game.tut || e.target.closest('button, .loot-popup, .confirm-back, .tut-back')) return;
     const p = toLogical(e);
-    scr.pointerDown(p.x, p.y);
+    scr.pointerDown(p.x, p.y, e);
   });
   // 비행 화면: 끌기와 놓기는 손가락이 화면 밖으로 나가도 받는다
   window.addEventListener('pointermove', e => {
     if (game.screen === 'flight' && screens.flight.phase === 'aim') { const p = toLogical(e); screens.flight.dragTo(p.x, p.y); }
   });
-  for (const type of ['pointerup', 'pointercancel']) {
-    window.addEventListener(type, () => { if (game.screen === 'flight' && screens.flight.phase === 'aim') screens.flight.pointerUp(); });
-  }
+  window.addEventListener('pointerup', () => { if (game.screen === 'flight' && screens.flight.phase === 'aim') screens.flight.pointerUp(); });
+  window.addEventListener('pointercancel', () => { if (game.screen === 'flight' && screens.flight.phase === 'aim') screens.flight.cancelDrag(); });
   // 모으기 화면: PC 방향키, 스페이스바·Enter로 뒤지기
   const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
   window.addEventListener('keydown', e => {
     touched();
-    sfx.ensure();
+    onFirstInput();
     if (game.tut) { e.preventDefault(); if (!e.repeat) game.tut.close(); return; } // 안내는 아무 키로 닫힘
     if (game.screen === 'flight') {
       if (ARROWS.includes(e.key) || e.key === ' ') {
@@ -3282,6 +3384,7 @@ async function boot() {
   loadSaved(PROGRESS_KEY, progress);
   if (!TUTORIALS.resetOnTitle) { const seen = []; loadSaved(TUT_KEY, seen); seen.forEach(k => game.tutSeen.add(k)); }
   watchBubbles();
+  watchVoices();
   game.lastInput = performance.now();
   await preload();
   go('title');

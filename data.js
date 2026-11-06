@@ -439,18 +439,19 @@ const CONTROL = {
   minAngle: 10, maxAngle: 60,
   angleMarks: [15, 30, 45], // 발사대 눈금
   tooHigh: 50, tooLow: 15,  // 결과 화면에서 "너무 높이·낮게" 안내하는 각도
-  minPower: 0.55,      // 가장 약하게 당겼을 때의 세기(1이 최대)
-  maxPull: 230,        // 이만큼 끌면 최대 세기(화면 1920 기준 픽셀)
+  minPower: 0.7,       // 가장 약하게 당겼을 때의 세기(1이 최대)
+  maxPull: 150,        // 이만큼 끌면 최대 세기(화면 1920 기준 픽셀)
+  pullAngleScale: 0.6, // 왼쪽 수평으로 당기면 최적 각도. 수평에서 아래로 기운 각도에 이 값을 곱해 더함(위로 당기면 낮아짐)
   minPull: 40,         // 이보다 짧게 끌고 놓으면 발사하지 않음
   // 끈 색: 세기가 upTo 이하일 때의 색
-  powerBands: [{ upTo: 0.72, color: '#e0b400' }, { upTo: 0.92, color: '#f28c38' }, { upTo: 1, color: '#d8362f' }],
-  startAngle: 30, startPower: 0.75, // 키보드로 조종할 때 처음 값
+  powerBands: [{ upTo: 0.8, color: '#e0b400' }, { upTo: 0.9, color: '#f28c38' }, { upTo: 1, color: '#d8362f' }],
+  startAngle: 30, startPower: 0.85, // 키보드로 조종할 때 처음 값
   keyAngleStep: 2, keyPowerStep: 0.05,
   highSpeedLoss: 0.5,  // 최적 각도보다 30도 높을 때 줄어드는 앞 속도 비율
   riseRate: 0.12,      // 각도 1도당 출발 위아래 속도(m/초)
   angleSink: 0.55,     // 각도가 30도 벗어날 때 빨라지는 하강 비율
-  powerSink: 0.5,      // 세기가 최대에서 1만큼 모자랄 때 빨라지는 하강 비율
-  previewShare: 1 / 3, // 예상 궤적을 보여 주는 앞부분 비율
+  powerSink: 0.3,      // 세기가 최대에서 1만큼 모자랄 때 빨라지는 하강 비율
+  previewShare: 1 / 2, // 예상 궤적을 보여 주는 앞부분 비율
   idleHintSeconds: 5,  // 조작이 없으면 안내하는 시간(초)
   drum: {
     lift: 1.75,        // 두드릴 때 떠오르는 속도(m/초)
@@ -473,8 +474,8 @@ const CONTROL = {
 const STAGES = [
   {
     id: 1, name: '1단계', goal: 90,
-    spots: ['storage-straw', 'storage-box', 'carpenter-box', 'yard-crock', 'yard-jar', 'smithy-jar'], // 가운데 가까운 곳만
-    loot: [{ item: 'bamboo', count: 1 }, { item: 'wood', count: 1 }, { item: 'paper', count: 3 }, { item: 'empty', count: 1 }],
+    spots: ['forest-straw', 'storage-straw', 'storage-box', 'carpenter-box', 'paper-box', 'yard-crock', 'yard-jar', 'smithy-jar'], // 가운데 가까운 곳만
+    loot: [{ item: 'bamboo', count: 1 }, { item: 'wood', count: 1 }, { item: 'paper', count: 4 }, { item: 'empty', count: 2 }],
     states: false, hintVillager: null, trades: false, events: [0, 0], launch: 'auto', drums: 0, needString: false,
     icons: [{ draw: 'spot', text: '부품 찾기' }],
   },
@@ -562,4 +563,14 @@ const CONTROL_TEXT = {
   soundOff: '소리 끄기',
   speakOn: '읽어주기 켜기',
   speakOff: '읽어주기 끄기',
+};
+
+// ----- 소리 -----
+const SFX_VOLUME = 1.0;    // 효과음 전체 볼륨(1.0이 기본, 0이면 무음)
+const SFX_MAX_GAIN = 0.5;  // 소리 하나의 최대 크기(귀가 아프지 않게 제한)
+const SPEECH_DELAY_MS = 100; // 읽기를 멈춘 뒤 다시 읽기까지 기다리는 시간(바로 읽으면 무시되는 브라우저 대비)
+const VOICE_NOTE = {
+  show: true, // 개발 확인용. false면 타이틀에 안내를 보여 주지 않음
+  text: '한국어 음성이 없어 읽어주기를 할 수 없어요',
+  waitSeconds: 2, // 음성 목록을 기다리는 시간(초)
 };

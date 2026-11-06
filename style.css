@@ -171,7 +171,7 @@ html, body {
 .title-bubble { left: 11.4rem; top: 7rem; width: 19rem; }
 .start-btn {
   flex-direction: column;
-  top: 21rem;
+  top: 20.85rem;
   min-height: 4.8rem;
   font-size: 1.9rem;
   line-height: 1.15;
@@ -241,7 +241,7 @@ html, body {
 .start-hard { left: 29.6rem; width: 17.4rem; background: #9fd8d2; }
 
 .records-btn span { white-space: normal; }
-.records-btn { left: 0.9rem; top: 21rem; width: 10.3rem; min-height: 4.8rem; font-size: 1.35rem; line-height: 1.2; padding: 0.1rem 0.3rem; }
+.records-btn { left: 0.9rem; top: 20.85rem; width: 10.3rem; min-height: 4.8rem; font-size: 1.35rem; line-height: 1.2; padding: 0.1rem 0.3rem; }
 
 /* ----- 비거 기록 도감 ----- */
 .records-title { left: 9rem; top: 0.5rem; font-size: 2.2rem; font-weight: 900; line-height: 1.2; }
@@ -299,6 +299,8 @@ html, body {
 
 /* ----- 부품 모으기 ----- */
 #ui.collecting { touch-action: none; }
+#stage.flying #ui, #stage.flying #scene { touch-action: none; }
+.voice-note { right: 0.9rem; top: 25.66rem; font-size: 1.2rem; line-height: 1.1; font-weight: 700; color: #fff; background: rgba(47, 59, 69, 0.8); padding: 0 0.4rem; border-radius: 0.3rem; }
 .bag-row {
   position: absolute;
   left: 0.9rem;
