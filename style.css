@@ -87,6 +87,8 @@ html, body {
   cursor: pointer;
   touch-action: manipulation;
 }
+.btn span { white-space: nowrap; }
+.btn svg { width: 1.25em; height: 1.25em; flex: none; margin-right: 0.3em; }
 .btn:active {
   border-bottom-width: 0.15rem;
   transform: translateY(0.3rem);
@@ -141,9 +143,9 @@ html, body {
 }
 .top-panel {
   right: 0.9rem;
-  top: 1rem;
+  top: 0.7rem;
   width: 16rem;
-  padding: 0.7rem 0.9rem;
+  padding: 0.4rem 0.9rem;
 }
 .top-cols { display: grid; grid-template-columns: 1fr 1fr; column-gap: 0.7rem; }
 .top-cols h3 { font-size: 1.2rem; font-weight: 800; line-height: 1.3; margin-bottom: 0.15rem; white-space: nowrap; }
@@ -157,7 +159,8 @@ html, body {
 .top-panel li {
   display: flex;
   justify-content: space-between;
-  padding: 0.12rem 0;
+  line-height: 1.25;
+  padding: 0.06rem 0;
   border-top: 0.08rem solid var(--line);
   font-size: 1.2rem;
   font-weight: 700;
@@ -175,9 +178,69 @@ html, body {
   padding: 0.2rem 0.6rem;
 }
 .start-btn small { font-size: 1.35rem; font-weight: 700; }
+.start-btn svg { position: absolute; left: 0.9rem; top: 50%; transform: translateY(-50%); width: 2.6rem; height: 2.6rem; margin: 0; }
+.start-btn small { display: block; }
+.title-sign { cursor: default; }
+
+/* 쉬운 모드 조종·소리·읽어주기 */
+.toggle-row { position: absolute; left: 11.6rem; top: 17.3rem; width: 35.4rem; display: flex; gap: 0.4rem; }
+.toggle-row .btn {
+  position: static;
+  flex: 1 1 0;
+  min-height: 3.3rem;
+  padding: 0.05rem 0.3rem;
+  font-size: 1.25rem;
+  line-height: 1.12;
+  border-bottom-width: 0.3rem;
+}
+.toggle-row small { display: block; font-size: 1.2rem; font-weight: 700; color: var(--ink-soft); }
+
+/* 단계 선택 */
+.stages-title { left: 9rem; top: 0.5rem; font-size: 2.2rem; font-weight: 900; line-height: 1.2; }
+.stage-row { position: absolute; left: 1.2rem; right: 1.2rem; top: 3.6rem; height: 22.8rem; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
+.stage-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.6rem 0.5rem;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+  border: 0.15rem solid var(--ink);
+  border-bottom-width: 0.45rem;
+  border-radius: 1.2rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.stage-card:active { transform: translateY(0.2rem); }
+.stage-card.locked { background: #e9e6df; color: #6f6b62; cursor: default; }
+.stage-card.locked canvas { opacity: 0.45; }
+.stage-name { font-size: 2.3rem; font-weight: 900; line-height: 1.15; }
+.stage-goal { font-size: 1.5rem; font-weight: 800; color: var(--orange-deep); line-height: 1.3; }
+.stage-card.locked .stage-goal { color: #6f6b62; }
+.stage-icons { display: flex; flex-direction: column; gap: 0.2rem; margin-top: 0.5rem; align-self: stretch; }
+.stage-icon { display: flex; align-items: center; gap: 0.4rem; font-size: 1.35rem; font-weight: 800; line-height: 1.15; white-space: nowrap; }
+.stage-icon canvas { width: 3.6rem; height: 3.6rem; flex: none; }
+.stage-lock { position: absolute; right: 0.5rem; top: 0.5rem; display: flex; flex-direction: column; align-items: center; font-size: 1.2rem; font-weight: 800; line-height: 1.1; }
+.stage-lock svg { width: 2.4rem; height: 2.4rem; }
+
+/* 관리자 메뉴 */
+.admin-back { z-index: 6; }
+.admin-box { left: 8rem; top: 2.4rem; width: 32rem; height: 22rem; padding: 0.8rem 1.2rem; }
+.admin-box h2 { font-size: 2rem; font-weight: 900; line-height: 1.2; margin-bottom: 0.5rem; }
+.admin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; }
+.admin-grid .btn { position: static; min-height: 3.6rem; font-size: 1.4rem; padding: 0.1rem 0.3rem; }
+
+/* 처음 보는 요소 안내 */
+.tut-back { position: absolute; inset: 0; z-index: 5; background: rgba(47, 59, 69, 0.38); cursor: pointer; }
+.tut-text { left: 8rem; right: 8rem; padding: 0.5rem 1rem; text-align: center; font-size: 2.2rem; font-weight: 900; line-height: 1.25; }
+.tut-finger { position: absolute; width: 4rem; height: 4rem; animation: tut-tap 0.8s ease-in-out infinite; }
+@keyframes tut-tap { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(0.7rem); } }
 .start-easy { left: 11.6rem; width: 17.4rem; }
 .start-hard { left: 29.6rem; width: 17.4rem; background: #9fd8d2; }
 
+.records-btn span { white-space: normal; }
 .records-btn { left: 0.9rem; top: 21rem; width: 10.3rem; min-height: 4.8rem; font-size: 1.35rem; line-height: 1.2; padding: 0.1rem 0.3rem; }
 
 /* ----- 비거 기록 도감 ----- */
@@ -259,10 +322,11 @@ html, body {
   cursor: pointer;
   touch-action: manipulation;
 }
+.bag-slot.good { border-color: #d39c00; box-shadow: inset 0 0 0 0.12rem #ffd94a; }
 .bag-slot.empty { background: var(--paper-deep); border-style: dashed; color: var(--ink-soft); }
 .bag-slot canvas { width: 3rem; height: 2rem; display: block; }
 .bag-slot span { font-size: 1.2rem; font-weight: 800; line-height: 1.2; }
-.done-btn { left: 34.5rem; top: 22.95rem; width: 12.6rem; min-height: 3.8rem; font-size: 1.7rem; }
+.done-btn { left: 34.5rem; top: 22.95rem; width: 12.6rem; min-height: 3.8rem; font-size: 1.5rem; padding: 0.2rem 0.3rem; }
 .timeup-bubble { left: 18.6rem; top: 8.2rem; width: 19.4rem; font-size: 1.8rem; min-height: 8.6rem; }
 
 /* 처음으로 버튼 */
@@ -299,6 +363,8 @@ html, body {
 /* 부품 팝업 */
 .loot-popup { left: 13.5rem; top: 3.6rem; width: 21rem; height: 18.4rem; text-align: center; }
 .loot-popup canvas { display: block; width: 12rem; height: 8rem; margin: 0.8rem auto 0; }
+.loot-popup.good { border-color: #d39c00; box-shadow: 0 0 0 0.25rem #ffd94a; }
+.loot-combo { position: absolute; right: 1rem; top: 0.5rem; font-size: 1.7rem; font-weight: 900; color: var(--orange-deep); }
 .loot-name { font-size: 1.9rem; font-weight: 900; line-height: 1.3; margin-top: 0.3rem; }
 .loot-take { left: 1rem; top: 13rem; width: 9.2rem; min-height: 3.8rem; }
 .loot-leave { left: 10.6rem; top: 13rem; width: 9.2rem; min-height: 3.8rem; font-size: 1.4rem; }
@@ -407,9 +473,11 @@ html, body {
 .distance small { font-size: 3rem; font-weight: 800; margin-left: 0.4rem; }
 .result-bubble { left: 7rem; top: 10.8rem; width: 14rem; min-height: 8.6rem; font-size: 1.35rem; padding: 0.5rem 0.8rem; }
 .result-bubble.two { left: 6.8rem; top: 10.6rem; width: 14.5rem; flex-direction: column; align-items: flex-start; justify-content: center; gap: 0.2rem; font-size: 1.2rem; line-height: 1.25; padding: 0.3rem 0.7rem; }
-.result-retry { left: 1.2rem; top: 21.1rem; width: 20.6rem; min-height: 3.9rem; }
-.result-quiz { left: 22.2rem; top: 21.1rem; width: 9.6rem; min-height: 3.9rem; }
-.result-other { left: 32.2rem; top: 21.1rem; width: 14.6rem; min-height: 3.9rem; background: #9fd8d2; }
+.result-retry { font-size: 1.35rem; padding: 0.2rem 0.4rem; left: 1.2rem; top: 21.1rem; width: 20.6rem; min-height: 3.9rem; }
+.result-quiz { font-size: 1.35rem; padding: 0.2rem 0.4rem; left: 22.2rem; top: 21.1rem; width: 9.6rem; min-height: 3.9rem; }
+.result-other { font-size: 1.35rem; padding: 0.2rem 0.4rem; left: 32.2rem; top: 21.1rem; width: 14.6rem; min-height: 3.9rem; background: #9fd8d2; }
+.control-line { left: 29.4rem; top: 0.95rem; width: 16.8rem; text-align: right; font-size: 1.2rem; font-weight: 700; line-height: 1.3; color: var(--ink-soft); white-space: nowrap; }
+.result-challenge .control-line { left: 1.2rem; top: 11.6rem; width: 20rem; text-align: left; }
 .result-note { left: 1.2rem; right: 1.2rem; top: 25.2rem; font-size: 1.2rem; font-weight: 600; line-height: 1.3; color: var(--ink-soft); text-align: center; }
 
 /* 기록 막대 그래프 */
@@ -472,12 +540,12 @@ html, body {
   padding: 0.3rem 1rem;
   line-height: 1.3;
 }
-.challenge-bubble.ok { font-size: 2rem; font-weight: 800; }
+.challenge-bubble.ok { font-size: 1.8rem; font-weight: 800; }
 .challenge-bubble .extra { font-weight: 800; color: #a8432e; }
-.challenge-bubble .cheer { font-size: 1.5rem; font-weight: 700; }
-.c-retry { left: 1.2rem; top: 21.2rem; width: 17rem; min-height: 3.8rem; }
-.c-quiz { left: 18.6rem; top: 21.2rem; width: 9.6rem; min-height: 3.8rem; }
-.c-other { left: 28.6rem; top: 21.2rem; width: 18.2rem; min-height: 3.8rem; background: #9fd8d2; }
+.challenge-bubble .cheer { font-size: 1.4rem; font-weight: 700; }
+.c-retry { font-size: 1.35rem; padding: 0.2rem 0.4rem; left: 1.2rem; top: 21.2rem; width: 17rem; min-height: 3.8rem; }
+.c-quiz { font-size: 1.35rem; padding: 0.2rem 0.4rem; left: 18.6rem; top: 21.2rem; width: 9.6rem; min-height: 3.8rem; }
+.c-other { font-size: 1.35rem; padding: 0.2rem 0.4rem; left: 28.6rem; top: 21.2rem; width: 18.2rem; min-height: 3.8rem; background: #9fd8d2; }
 
 /* ----- 퀴즈 ----- */
 .quiz-q {

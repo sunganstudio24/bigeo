@@ -54,7 +54,7 @@ const CONFIG = {
   world: {
     riverStart: 14,   // 남강 시작 지점
     riverEnd: 42,     // 남강 끝, 건너편 모래밭 시작 지점
-    rulerMax: 130,    // 눈금과 막대 그래프의 최대 거리
+    rulerMax: 140,    // 눈금과 막대 그래프의 최대 거리
     rulerStep: 10,    // 눈금 간격
   },
 
@@ -186,7 +186,7 @@ const TEXT = {
   startEasySub: '바로 만들기',
   startChallenge: '도전 모드',
   startChallengeSub: '진주성 60초',
-  titleHello: '안녕! 나는 하모야. 아요랑 비거를 날려 보자!',
+  titleHello: '안녕! 아요랑 비거를 날려 보자!',
   titleBye: '고마워! 또 놀러 와!',
   topTitle: '오늘의 최고 기록 TOP 5', //  : TOP과 5가 줄바꿈으로 갈라지지 않게 하는 띄어쓰기
   topEmpty: '아직 없어요',
@@ -223,7 +223,6 @@ const PLACE_INFO = {
 // ----- 사진 배경(assets/bg/). 파일이 없으면 기존 그림 배경을 씁니다 -----
 const BG_OVERLAY = 0.25;     // 사진 위 흰 막의 불투명도(0~1)
 const BG_DESATURATE = 0.15;  // 채도를 낮추는 정도(0 = 그대로, 1 = 흑백)
-const PHOTO_CREDIT = '사진: 진주시'; // 사진 하단 구석에 나오는 출처
 const GROUND_Y = 840;        // 비행 화면의 땅·강 높이(화면 1920×1080 기준, 사진이 따라 움직임, 권장 700~840)
                              // 작게 하면 출발 높이도 함께 올라가서 화면 위로 나갈 수 있습니다.
 const FLIGHT_HILL_ALPHA = 0.8;  // 사진 위 망진산 언덕 그림의 불투명도
@@ -235,7 +234,7 @@ const BG_PHOTOS = {
   story:  { file: 'story.jpg',  focusX: 0.6, focusY: 0.58 },
   flight: {
     file: 'flight.jpg', bankY: 0.545,
-    focusX: 0.527,           // 쉬운 모드: 촉석루가 오른쪽에 보이게
+    focusX: 0.543,           // 쉬운 모드: 촉석루가 오른쪽에 보이게
     focusXChallenge: 0.31,   // 도전 모드: 왼쪽이 성이므로 건너편은 숲만 보이게
   },
 };
@@ -253,8 +252,8 @@ const AYO_SIZE = {
 // =============================================================
 const BAG_SIZE = 5;           // 가방 칸 수
 const TIME_LIMIT = 60;        // 부품 모으기 제한 시간(초)
-const SUCCESS_DISTANCE = 100; // 소식 전달에 성공하는 비행 거리(m)
-const SEARCH_TIME = 1;        // 숨김 장소를 뒤지는 시간(초)
+const SEARCH_TAPS = 5;        // 숨김 장소를 뒤지려고 누르는 횟수
+const SEARCH_TAPS_PER_SECOND = 4; // 시간 검사에서 가정하는 연타 빠르기
 const TALK_TIME = 2;          // 마을 사람과 이야기하는 시간(초)
 
 // 부품 상태와 끈이 비행에 주는 영향
@@ -278,6 +277,7 @@ const CHALLENGE = {
   gridCell: 20,          // 길찾기 칸 크기(픽셀)
   tapRadius: 75,         // 이 거리 안을 누르면 그 장소를 누른 것으로 봄(픽셀)
   reachDistance: 110,    // 방향키로 움직일 때 스페이스바로 뒤질 수 있는 거리(픽셀)
+  manyEmptyAt: 2,        // 부품이 안 나온 곳을 이만큼 열면 "마을 사람에게 물어봐" 안내
   fixedSeed: null,       // 숫자를 넣으면 매 판 같은 배치(시험용), null이면 판마다 다름
   hintEmptyChance: 0.25, // 힌트가 "비어 있더라"일 확률
   hintShowSeconds: 6,    // 힌트 말풍선을 보여 주는 시간(초)
@@ -331,29 +331,18 @@ const HIDE_SPOTS = [
   { id: 'smithy-box',     area: 'smithy',    kind: 'box',    x: 1760, y: 595, sx: 1685, sy: 595 },
 ];
 
-// 판마다 숨김 장소에 섞어 넣는 내용물(개수 합이 숨김 장소 수와 같아야 합니다). empty = 꽝
-const LOOT_TABLE = [
-  { item: 'bamboo', count: 1 },
-  { item: 'crackedBamboo', count: 1 },
-  { item: 'wood', count: 1 },
-  { item: 'iron', count: 1 },
-  { item: 'paper', count: 3 },
-  { item: 'tornPaper', count: 1 },
-  { item: 'string', count: 1 },
-  { item: 'empty', count: 1 },
-  { item: 'record', count: 2 }, // 옛 책 조각: 가방에 넣지 않고 카드로 읽음
-];
-
 // 부품: name = 이름, short = 가방 칸 이름, use = 용도(body 몸통 / wing 날개 / string 끈)
 // heavy = 무거워서 느려짐, hintRank = 힌트로 알려 주는 순서(작을수록 먼저)
 const ITEMS = {
-  bamboo:        { name: '튼튼한 대나무', short: '대나무',    use: 'body', bodyKey: 'bamboo', hintRank: 1 },
+  bamboo:        { name: '튼튼한 대나무', short: '대나무',    use: 'body', bodyKey: 'bamboo', good: true, hintRank: 1 },
   crackedBamboo: { name: '금 간 대나무',  short: '금 대나무', use: 'body', bodyKey: 'bamboo', cracked: true, hintRank: 3 },
   wood:          { name: '나무판',        short: '나무판',    use: 'body', bodyKey: 'wood', hintRank: 2 },
   iron:          { name: '쇠',            short: '쇠',        use: 'body', bodyKey: 'iron', heavy: true, hintRank: 3 },
-  paper:         { name: '깨끗한 한지',   short: '한지',      use: 'wing', hintRank: 1 },
+  paper:         { name: '깨끗한 한지',   short: '한지',      use: 'wing', good: true, hintRank: 1 },
   tornPaper:     { name: '찢어진 한지',   short: '찢긴 한지', use: 'wing', torn: true, hintRank: 3 },
-  string:        { name: '튼튼한 끈',     short: '끈',        use: 'string', hintRank: 1 },
+  string:        { name: '튼튼한 끈',     short: '끈',        use: 'string', good: true, hintRank: 1 },
+  jar:           { name: '작은 항아리',   short: '항아리',    use: 'trap', hintRank: 3 }, // 비거에는 못 쓰고 교환에 씀
+  pot:           { name: '솥',            short: '솥',        use: 'trap', hintRank: 3 },
   record:        { name: '옛 책 조각',    short: '옛 책',     use: 'record', hintRank: 2 },
 };
 
@@ -387,9 +376,9 @@ const VILLAGERS = [
   { id: 'v3', color: '#b57bc2', x: 1560, y: 448, sx: 1490, sy: 470 },
 ];
 
-// 힌트 문장: {place} 장소, {spot} 숨김 장소, {item} 부품, {이가}·{은는} 받침에 맞는 조사
+// 힌트 문장(20자 이내): {place} 장소, {spot} 숨김 장소, {item} 부품, {이가}·{은는} 받침에 맞는 조사
 const HINT_TEMPLATES = {
-  found: '{place} {spot}에 {item}{이가} 있던데?',
+  found: '{place} {spot}에 {item}!',
   empty: '{place} {spot}{은는} 비어 있더라.',
   none: '이제 내가 아는 건 없어. 힘내!',
 };
@@ -411,31 +400,166 @@ const CHALLENGE_STORY = {
   quitAsk: '그만두고 처음으로 갈까?',
   yes: '예',
   no: '아니오',
-  timeUp: '시간 끝! 모은 부품으로 비거를 만들자!',
+  timeUp: '시간 끝! 비거를 만들자!',
   noParts: '부품이 모자라… 다시 모아 볼까?',
   retry: '다시 도전',
   retryFull: '다시 도전(60초부터)',
   buildHello: '모은 부품으로 비거를 만들어 보자!',
   noString: '끈이 없어서 날개가 흔들려요',
-  crackedNote: '금 간 대나무라 조금 흔들릴 수 있어요',
+  crackedNote: '금 간 대나무는 흔들려요',
   tornNote: '찢어진 한지는 반 개로 쳐요',
   crackedTag: '금 감',
   wingLabelCount: '날개 (한지 {n}개)',
   needPaper: '한지 {n}개',
   noMaterial: '없음',
   successTitle: '성공!',
-  success: '소식 전달 성공! 진주성을 도왔어!',
+  success: '소식 전달 성공!',
   goalReached: '목표 {goal}m 도착!',
-  goalLeft: '목표 {goal}m까지 {left}m 남았어!',
+  goalLeft: '목표까지 {left}m 남았어!',
 };
 
 // 도전 모드 실패 시 하모의 한 마디(규칙은 game.js의 challengeFeedbackKey, 먼저 맞는 것 하나)
 // 어느 것도 맞지 않으면 기존 FEEDBACK만 나옵니다.
 const CHALLENGE_FEEDBACK = {
+  jarHeld: '항아리를 할머니께 드렸으면 한지로 바꿔 주셨을 거야!',
+  potHeld: '솥을 대장장이 아저씨께 드렸으면 끈으로 바꿔 주셨을 거야!',
   ironNoBamboo: '대나무를 못 가져와서 무거운 쇠로 만들었네. 다음엔 대나무를 먼저 찾아보자!',
   crackedBamboo: '대나무에 금이 가 있어서 비거가 흔들렸어. 튼튼한 걸 골라 보자!',
   tornPaper: '찢어진 한지는 바람이 새어 나가. 깨끗한 한지를 찾아보자!',
   manyEmpty: '마을 사람들한테 물어보면 어디에 있는지 알려 줄 거야!',
   littlePaper: '한지가 더 있었으면 날개를 크게 만들 수 있었어!',
   noString: '끈이 없어서 날개가 흔들렸어. 다음엔 끈을 꼭 찾아보자!',
+};
+
+// =============================================================
+// 조종: 당겨서 쏘기, 배 두드리기, 상승 기류
+// =============================================================
+const CONTROL = {
+  optAngle: 30,        // 가장 멀리 가는 발사 각도(도). 이 각도·최대 세기가 자동 발사와 같은 결과
+  minAngle: 10, maxAngle: 60,
+  angleMarks: [15, 30, 45], // 발사대 눈금
+  tooHigh: 50, tooLow: 15,  // 결과 화면에서 "너무 높이·낮게" 안내하는 각도
+  minPower: 0.55,      // 가장 약하게 당겼을 때의 세기(1이 최대)
+  maxPull: 230,        // 이만큼 끌면 최대 세기(화면 1920 기준 픽셀)
+  minPull: 40,         // 이보다 짧게 끌고 놓으면 발사하지 않음
+  // 끈 색: 세기가 upTo 이하일 때의 색
+  powerBands: [{ upTo: 0.72, color: '#e0b400' }, { upTo: 0.92, color: '#f28c38' }, { upTo: 1, color: '#d8362f' }],
+  startAngle: 30, startPower: 0.75, // 키보드로 조종할 때 처음 값
+  keyAngleStep: 2, keyPowerStep: 0.05,
+  highSpeedLoss: 0.5,  // 최적 각도보다 30도 높을 때 줄어드는 앞 속도 비율
+  riseRate: 0.12,      // 각도 1도당 출발 위아래 속도(m/초)
+  angleSink: 0.55,     // 각도가 30도 벗어날 때 빨라지는 하강 비율
+  powerSink: 0.5,      // 세기가 최대에서 1만큼 모자랄 때 빨라지는 하강 비율
+  previewShare: 1 / 3, // 예상 궤적을 보여 주는 앞부분 비율
+  idleHintSeconds: 5,  // 조작이 없으면 안내하는 시간(초)
+  drum: {
+    lift: 1.75,        // 두드릴 때 떠오르는 속도(m/초)
+    push: 0.5,         // 두드릴 때 빨라지는 앞 속도(m/초)
+    fallingScale: 1,   // 내려가는 중에 쓴 효과
+    risingScale: 0.6,  // 올라가는 중에 쓴 효과
+    bodyEffect: { bamboo: 1, wood: 0.75, iron: 0.08 }, // 몸통별 효과(무거울수록 작음)
+  },
+  // 상승 기류: 거리(m) 구간, power = 떠오르는 힘. 판마다 같은 위치(쉬운 모드 자동 비행에는 없음)
+  thermals: [{ from: 22, to: 33, power: 3 }],
+};
+
+// =============================================================
+// 도전 모드 단계. 기능을 여기서 켜고 끕니다.
+// =============================================================
+// spots: HIDE_SPOTS의 id, loot: 내용물(개수 합 = 장소 수), empty 꽝, record 옛 책 조각
+// states: 금 간·찢어진 부품 있음, hintVillager: 힌트 주는 마을 사람 id(null 없음), trades: 물물교환
+// events: [최소, 최대] 돌발 이벤트 수, launch: 'auto' 자동 / 'pull' 당겨서 쏘기, drums: 배 두드리기 횟수
+// needString: 끈이 없을 때 벌칙 적용, icons: 카드에 보여 줄 새 요소
+const STAGES = [
+  {
+    id: 1, name: '1단계', goal: 90,
+    spots: ['storage-straw', 'storage-box', 'carpenter-box', 'yard-crock', 'yard-jar', 'smithy-jar'], // 가운데 가까운 곳만
+    loot: [{ item: 'bamboo', count: 1 }, { item: 'wood', count: 1 }, { item: 'paper', count: 3 }, { item: 'empty', count: 1 }],
+    states: false, hintVillager: null, trades: false, events: [0, 0], launch: 'auto', drums: 0, needString: false,
+    icons: [{ draw: 'spot', text: '부품 찾기' }],
+  },
+  {
+    id: 2, name: '2단계', goal: 100,
+    spots: ['forest-basket', 'forest-straw', 'storage-box', 'carpenter-box', 'carpenter-basket', 'paper-basket', 'yard-crock', 'yard-jar', 'smithy-box'],
+    loot: [{ item: 'bamboo', count: 1 }, { item: 'crackedBamboo', count: 1 }, { item: 'wood', count: 1 }, { item: 'paper', count: 3 }, { item: 'tornPaper', count: 1 }, { item: 'string', count: 1 }, { item: 'record', count: 1 }],
+    states: true, hintVillager: 'v2', trades: false, events: [0, 0], launch: 'pull', drums: 0, needString: true,
+    icons: [{ draw: 'cracked', text: '금 간 부품' }, { draw: 'villager', text: '마을 사람' }, { draw: 'pull', text: '당겨서 쏘기' }],
+  },
+  {
+    id: 3, name: '3단계', goal: 110,
+    spots: HIDE_SPOTS.map(s => s.id),
+    loot: [{ item: 'bamboo', count: 1 }, { item: 'crackedBamboo', count: 1 }, { item: 'iron', count: 1 }, { item: 'paper', count: 3 }, { item: 'tornPaper', count: 1 }, { item: 'string', count: 1 }, { item: 'jar', count: 1 }, { item: 'pot', count: 1 }, { item: 'record', count: 1 }, { item: 'empty', count: 1 }],
+    states: true, hintVillager: 'v2', trades: true, events: [1, 2], launch: 'pull', drums: 3, needString: true,
+    icons: [{ draw: 'trade', text: '물물교환' }, { draw: 'chicken', text: '돌발 사건' }, { draw: 'drum', text: '배 두드리기' }],
+  },
+];
+
+const STAGE_TEXT = {
+  title: '단계를 골라 봐!',
+  goal: '목표 {goal}m',
+  locked: '잠김',
+  opened: '{name}가 열렸어!',
+  next: '다음 단계 도전',
+  adminTitle: '단계 고정',
+  adminAuto: '진행대로',
+  adminReset: '진행·도감 지우기',
+  adminClose: '닫기',
+  adminFixed: '{name} 고정',
+};
+
+// 물물교환(3단계): villager = VILLAGERS의 id
+const TRADES = [
+  { villager: 'v1', who: '할머니', want: 'jar', give: 'paper', ask: '항아리가 있으면 바꿔 줄게.' },
+  { villager: 'v3', who: '대장장이 아저씨', want: 'pot', give: 'string', ask: '솥이 있으면 바꿔 줄게.' },
+];
+const TRADE_THANKS = '고마워! 대신 이거 줄게.';
+
+// 돌발 이벤트(3단계). at: 일어나는 시간(초) 범위
+const EVENTS = {
+  atFrom: 10, atTo: 45,
+  edgeSeconds: 1.2,    // 화면 가장자리 반짝임 시간
+  noticeSeconds: 2.2,  // 하모 한 줄 알림 시간
+  paper: {
+    seconds: 3, startText: '한지가 날아가! 잡아!', missText: '앗, 한지가 강에 빠졌어!', tapRadius: 110,
+    reward: 'paper',
+  },
+  chicken: {
+    startText: '닭이 끈을 물고 갔어!', speedScale: 1.1, // 아요보다 얼마나 빠른지
+    runSeconds: 6, restSeconds: 1.3, touchRadius: 66, tapRadius: 110, sound: '꼬꼬', reward: 'string',
+  },
+};
+
+// 처음 보는 요소 안내(20자 이내)
+const TUTORIALS = {
+  enabled: true,          // false면 안내를 전혀 보여 주지 않음
+  resetOnTitle: true,     // 타이틀 복귀·자동 리셋 때 본 기록을 지움(체험관용). false면 한 번만 보여 줌
+  items: {
+    search: '톡톡 눌러!',
+    bagFull: '칸을 누르면 내려놔!',
+    state: '금 가거나 찢어진 건 약해!',
+    villager: '마을 사람에게 물어봐!',
+    pull: '뒤로 당겼다 놓아!',
+    drum: '옛 책에는 배를 두드리면 떠올랐대. 눌러 봐!', // 요청 문구 그대로(20자 초과)
+    event: '눌러서 잡아!',
+    trade: '원하는 물건을 갖다 줘!',
+  },
+};
+
+// 조종·재미 요소 문구
+const CONTROL_TEXT = {
+  pullHint: '뒤로 당겼다 놓아!',
+  drumPop: '둥!',
+  line: '발사 각도 {angle}° · 두드리기 {drums}번',
+  lineNoDrum: '발사 각도 {angle}°',
+  tooHigh: '너무 높이 쐈어! 조금 낮게!',
+  tooLow: '너무 낮게 쐈어! 조금 위로!',
+  noDrum: '화면을 눌러 배를 두드려 봐!',
+  drumWin: '옛 책 속 비거처럼 날았어!',
+  combo: '연속 {n}개!',
+  easyControl: '조종하기',
+  easyAuto: '자동 비행',
+  soundOn: '소리 켜기',
+  soundOff: '소리 끄기',
+  speakOn: '읽어주기 켜기',
+  speakOff: '읽어주기 끄기',
 };
