@@ -443,6 +443,10 @@ function runChallengeCombos() {
   // 쇠 하나당 속도 20% 감소
   if (Math.abs(speedScaleOf(['iron']) - 0.8) > 0.001) problems.push('쇠 속도 감소가 20%가 아님');
 
+  // ----- 옛 기록 카드 검사 -----
+  if (RECORD_CARDS.length !== 6 || new Set(RECORD_CARDS.map(r => r.id)).size !== 6) problems.push('기록 카드는 서로 다른 6장이어야 함');
+  if (shuffleLoot(1).filter(t => t === 'record').length !== 2 || shuffleLoot(1).filter(t => t === 'empty').length !== 1) problems.push('옛 책 조각 2개, 꽝 1개여야 함');
+
   // ----- 배치 검사 -----
   const lootTotal = LOOT_TABLE.reduce((n, r) => n + r.count, 0);
   if (lootTotal !== HIDE_SPOTS.length) problems.push(`내용물 ${lootTotal}개, 숨김 장소 ${HIDE_SPOTS.length}곳: 수가 다름`);
@@ -480,7 +484,8 @@ function runChallengeCombos() {
   const dist = stands.map(a => stands.map(b => pathLength(a, b)));
   dist.forEach((row, i) => row.forEach((d, j) => { if (i !== j && d === 0) problems.push(`${i}→${j} 길이 없음`); }));
   const allStops = HIDE_SPOTS.map((_, i) => i + 1);
-  const parts9 = LOOT_TABLE.filter(r => r.item !== 'empty').reduce((n, r) => n + r.count, 0);
+  // 옛 책 조각 카드를 읽는 동안에는 시계가 멈추므로 판단 시간에 넣지 않는다
+  const parts9 = LOOT_TABLE.filter(r => r.item !== 'empty' && r.item !== 'record').reduce((n, r) => n + r.count, 0);
   const walkAll = shortestTour(dist, allStops) / CHALLENGE.walkSpeed;
   const allSeconds = walkAll + HIDE_SPOTS.length * SEARCH_TIME + parts9 * decisionSeconds;
   if (allSeconds < 80 || allSeconds > 90) problems.push(`전부 뒤지기 ${allSeconds.toFixed(1)}초(목표 80~90초)`);
@@ -555,6 +560,31 @@ function saveTop(flight, mode) {
   try { localStorage.setItem(TOP_KEY, JSON.stringify(memoryTop)); } catch (e) { /* 무시 */ }
 }
 
+// ----- 모은 옛 기록 카드: 날짜가 바뀌어도 남는다 -----
+const RECORD_KEY = 'ayo-bigeo-records';
+let memoryRecords = [];
+
+function loadRecords() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RECORD_KEY));
+    if (Array.isArray(saved)) memoryRecords = saved.filter(id => RECORD_CARDS.some(c => c.id === id));
+  } catch (e) { /* 저장소를 못 쓰면 메모리 기록만 사용 */ }
+  return memoryRecords;
+}
+
+// 아직 안 모은 카드 중 하나를 고른다. 전부 모았으면 아무 카드나 다시 보여 준다.
+function pickRecord() {
+  const have = loadRecords();
+  const left = RECORD_CARDS.filter(c => !have.includes(c.id));
+  if (left.length === 0) {
+    return { card: RECORD_CARDS[Math.floor(Math.random() * RECORD_CARDS.length)], fresh: false, complete: false };
+  }
+  const card = left[Math.floor(Math.random() * left.length)];
+  have.push(card.id);
+  try { localStorage.setItem(RECORD_KEY, JSON.stringify(have)); } catch (e) { /* 무시 */ }
+  return { card, fresh: true, complete: left.length === 1 };
+}
+
 // =============================================================
 // 이 아래는 브라우저 화면 코드 (Node 테스트에서는 실행하지 않음)
 // =============================================================
@@ -565,12 +595,12 @@ const C = {
   wood: '#c89b6c', woodDark: '#a97f52', woodLight: '#dcb78c',
   bamboo: '#cfd67a', bambooDark: '#9ba84f', iron: '#9aa3ab', ironDark: '#6c757d',
   wing: '#f8ecd2', wingBack: '#e6d3a9', stone: '#c8553d',
-  orange: '#f28c38', orangeDark: '#d9701f', muzzle: '#fff4e2', collar: '#d8362f',
+  orange: '#f28c38', orangeDark: '#d9701f', muzzle: '#fff4e2', pearl: '#ffffff',
   hamo: '#a9c4e8', hamoLight: '#ffffff',
   wall: '#e6dfcc', wallDark: '#cbc2a8', roof: '#5e8a84',
 };
 const W = 1920, H = 1080;           // 논리 해상도
-const GROUND_Y = 840, RULER_Y = 970; // 땅 높이, 눈금 시작
+const RULER_Y = 970;                // 눈금 시작(땅 높이 GROUND_Y는 data.js)
 const WORLD_X0 = 290, WORLD_SCALE = 12.5; // 출발점 위치, 1m당 픽셀
 const px = m => WORLD_X0 + m * WORLD_SCALE;
 const py = m => GROUND_Y - m * WORLD_SCALE;
@@ -589,7 +619,8 @@ let canvas, ctx, ui, bg, bgCtx, bgKind = '';
 function loadImage(path) {
   return new Promise(resolve => {
     const img = new Image();
-    img.onload = () => resolve(img);
+    // 화면에 그릴 때 끊기지 않도록 압축을 미리 풀어 둔다
+    img.onload = () => { if (img.decode) img.decode().then(() => resolve(img), () => resolve(img)); else resolve(img); };
     img.onerror = () => resolve(null);
     img.src = path;
   });
@@ -599,6 +630,9 @@ async function preload() {
   const files = [...new Set(Object.values(HAMO_IMG))];
   const jobs = files.map(async f => { images[f] = await loadImage('assets/hamo/' + f); });
   jobs.push((async () => { images.ayo = await loadImage('assets/ayo.png'); })());
+  for (const key of Object.keys(BG_PHOTOS)) {
+    jobs.push((async () => { images['bg:' + key] = await loadImage('assets/bg/' + BG_PHOTOS[key].file); })());
+  }
   // 파일 하나가 응답이 없어도 5초 뒤에는 게임을 시작한다
   await Promise.race([Promise.all(jobs), new Promise(r => setTimeout(r, 5000))]);
 }
@@ -673,33 +707,56 @@ function drawHamo(c, key, cx, cy, maxW, maxH) {
   circle(c, cx, cy + r * 0.1, r * 0.1); c.fill();
 }
 
-// 아요: assets/ayo.png가 있으면 이미지, 없으면 도형
-function drawAyo(c, cx, cy, r) {
-  if (images.ayo) { drawFit(c, images.ayo, cx, cy, r * 2.4, r * 2.4); return; }
+// 아요(삵): assets/ayo.png가 있으면 이미지, 없으면 도형. h = 전체 높이, flip = 좌우 반전
+function drawAyo(c, cx, cy, h, flip) {
+  c.save();
+  c.translate(cx, cy);
+  if (flip) c.scale(-1, 1);
+  const img = images.ayo;
+  if (img) {
+    const w = img.width * h / img.height;
+    c.drawImage(img, -w / 2, -h / 2, w, h);
+  } else drawAyoShape(c, h * 0.3);
+  c.restore();
+}
+
+// 이미지가 없을 때의 아요: 주황 삵 + 이마 줄무늬 + 흰 진주 목걸이 (원점이 머리 가운데)
+function drawAyoShape(c, r) {
   c.beginPath(); // 귀
-  c.moveTo(cx - r * 0.85, cy - r * 0.35); c.lineTo(cx - r * 0.75, cy - r * 1.2); c.lineTo(cx - r * 0.15, cy - r * 0.85); c.closePath();
+  c.moveTo(-r * 0.85, -r * 0.35); c.lineTo(-r * 0.75, -r * 1.2); c.lineTo(-r * 0.15, -r * 0.85); c.closePath();
   fillStroke(c, C.orange, 3.5);
   c.beginPath();
-  c.moveTo(cx + r * 0.85, cy - r * 0.35); c.lineTo(cx + r * 0.75, cy - r * 1.2); c.lineTo(cx + r * 0.15, cy - r * 0.85); c.closePath();
+  c.moveTo(r * 0.85, -r * 0.35); c.lineTo(r * 0.75, -r * 1.2); c.lineTo(r * 0.15, -r * 0.85); c.closePath();
   fillStroke(c, C.orange, 3.5);
-  circle(c, cx, cy, r); fillStroke(c, C.orange, 3.5); // 머리
+  circle(c, 0, 0, r); fillStroke(c, C.orange, 3.5); // 머리
   // 이마 줄무늬
   c.strokeStyle = C.orangeDark; c.lineWidth = r * 0.12; c.lineCap = 'round';
   for (const dx of [-0.25, 0, 0.25]) {
-    c.beginPath(); c.moveTo(cx + r * dx, cy - r * 0.92); c.lineTo(cx + r * dx, cy - r * 0.55); c.stroke();
+    c.beginPath(); c.moveTo(r * dx, -r * 0.92); c.lineTo(r * dx, -r * 0.55); c.stroke();
   }
+  c.lineCap = 'butt';
   // 입 주변, 눈, 코
   c.fillStyle = C.muzzle;
-  c.beginPath(); c.ellipse(cx + r * 0.08, cy + r * 0.42, r * 0.55, r * 0.4, 0, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.ellipse(0, r * 0.42, r * 0.55, r * 0.4, 0, 0, Math.PI * 2); c.fill();
   c.fillStyle = C.ink;
-  circle(c, cx - r * 0.3, cy - r * 0.05, r * 0.11); c.fill();
-  circle(c, cx + r * 0.46, cy - r * 0.05, r * 0.11); c.fill();
-  c.fillStyle = C.collar;
-  circle(c, cx + r * 0.08, cy + r * 0.26, r * 0.09); c.fill();
-  // 빨간 목줄
-  c.strokeStyle = C.collar; c.lineWidth = r * 0.24; c.lineCap = 'round';
-  c.beginPath(); c.arc(cx, cy + r * 0.1, r * 0.93, Math.PI * 0.32, Math.PI * 0.68); c.stroke();
-  c.lineCap = 'butt';
+  circle(c, -r * 0.38, -r * 0.05, r * 0.11); c.fill();
+  circle(c, r * 0.38, -r * 0.05, r * 0.11); c.fill();
+  circle(c, 0, r * 0.24, r * 0.08); c.fill();
+  // 흰 진주 목걸이
+  for (let i = 0; i <= 6; i++) {
+    const a = Math.PI * (0.2 + 0.6 * i / 6);
+    circle(c, Math.cos(a) * r * 1.02, Math.sin(a) * r * 1.02, r * 0.14);
+    fillStroke(c, C.pearl, 2);
+  }
+}
+
+// 비거에 탄 아요: 상반신만 보인다(아랫부분은 몸통이 가림). 원점이 비거 몸통 가운데
+function drawAyoSeated(c) {
+  const hullTop = -8, img = images.ayo, A = AYO_SIZE;
+  if (!img) { drawAyo(c, A.seatX, hullTop - A.onBigeo * 0.32, A.onBigeo); return; }
+  const k = A.onBigeo / img.height, w = img.width * k, srcH = img.height * A.showTop;
+  // 아랫변이 몸통 뒤로 살짝 들어가도록 6만큼 내려서 그린다
+  c.drawImage(img, 0, 0, img.width, srcH, A.seatX - w / 2, hullTop + 6 - srcH * k, w, srcH * k);
 }
 
 // 날개 한 장 (size: 그림 크기, flap: 날갯짓 0~1)
@@ -779,7 +836,7 @@ function drawBigeo(c, pick, x, y, scale, pitchDeg, flap) {
   c.scale(scale, scale);
   drawStone(c, pick.ballast);
   drawWingShape(c, pick.wing, flap);
-  drawAyo(c, 26, -38, 33);
+  drawAyoSeated(c);
   drawHull(c, pick.body);
   c.restore();
 }
@@ -793,10 +850,68 @@ function paperCloud(c, x, y, s) {
   c.fillRect(x - 60 * s, y + 8 * s, 134 * s, 30 * s);
 }
 
+// 사진 배경: 비율을 유지한 채 화면을 꽉 채운다(cover). 사진이 없으면 false를 돌려준다.
+// areaH = 채울 높이, focusX = 화면 가운데에 올 사진 가로 위치(비행 화면에서 모드별로 지정)
+function drawPhoto(c, key, areaH, focusX) {
+  const img = images['bg:' + key];
+  if (!img) return false;
+  const p = BG_PHOTOS[key], iw = img.width, ih = img.height;
+  let s = Math.max(W / iw, areaH / ih), y;
+  if (p.bankY) {
+    // 사진 속 강둑이 GROUND_Y에 오도록 맞춘다
+    s = Math.max(s, GROUND_Y / (p.bankY * ih), (areaH - GROUND_Y) / ((1 - p.bankY) * ih));
+    y = GROUND_Y - p.bankY * ih * s;
+  } else {
+    y = clamp(areaH / 2 - p.focusY * ih * s, areaH - ih * s, 0);
+  }
+  const x = clamp(W / 2 - (focusX === undefined ? p.focusX : focusX) * iw * s, W - iw * s, 0);
+  c.save();
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(img, x, y, iw * s, ih * s);
+  // 그림과 어울리게 채도를 낮추고 흰 막을 씌운다
+  c.globalCompositeOperation = 'saturation';
+  c.globalAlpha = BG_DESATURATE;
+  c.fillStyle = '#808080'; c.fillRect(0, 0, W, areaH);
+  c.globalCompositeOperation = 'source-over';
+  c.globalAlpha = BG_OVERLAY;
+  c.fillStyle = '#ffffff'; c.fillRect(0, 0, W, areaH);
+  c.restore();
+  return true;
+}
+
+// 사진 출처: 아래쪽 구석(left가 true면 왼쪽, 아니면 오른쪽)
+function drawCredit(c, bottomY, left) {
+  c.font = '700 32px system-ui, sans-serif';
+  const tw = c.measureText(PHOTO_CREDIT).width, x = left ? 10 : W - tw - 34;
+  c.save();
+  c.globalAlpha = 0.75; c.fillStyle = '#ffffff';
+  roundBox(c, x, bottomY - 44, tw + 24, 40, 10); c.fill();
+  c.restore();
+  c.fillStyle = C.ink; c.textAlign = 'left'; c.textBaseline = 'middle';
+  c.fillText(PHOTO_CREDIT, x + 12, bottomY - 23);
+}
+
+// 사진 위에서도 읽히도록 흰 테두리를 두른 글자
+function haloText(c, text, x, y) {
+  c.lineJoin = 'round'; c.lineWidth = 12; c.strokeStyle = '#ffffff';
+  c.strokeText(text, x, y);
+  c.fillText(text, x, y);
+}
+
+// 타이틀·이야기 배경: 사진이 있으면 사진, 없으면 기존 그림
+function renderPhotoBg(c, key) {
+  if (drawPhoto(c, key, H)) drawCredit(c, H);
+  else renderLandscape(c, false);
+}
+
 // challenge: 도전 모드 비행 배경(왼쪽이 진주성, 오른쪽이 성 밖)
 function renderLandscape(c, withRuler, challenge) {
   const w = CONFIG.world, f = CONFIG.flight;
   const bottom = withRuler ? RULER_Y : H;
+  // 비행 화면: 사진은 배경으로만 쓰고 언덕·모래밭·눈금은 그 위에 그린다
+  const photo = withRuler && drawPhoto(c, 'flight', bottom, challenge ? BG_PHOTOS.flight.focusXChallenge : BG_PHOTOS.flight.focusX);
+  const gx = px(100);
+  if (!photo) {
   c.fillStyle = C.sky; c.fillRect(0, 0, W, H);
   paperCloud(c, 620, 130, 1.1);
   paperCloud(c, 1120, 230, 0.8);
@@ -810,7 +925,6 @@ function renderLandscape(c, withRuler, challenge) {
   c.lineTo(W, GROUND_Y); c.closePath(); c.fill();
 
   // 진주성 성벽과 누각
-  const gx = px(100);
   if (!challenge) {
     const wallL = px(70), wallR = W;
     c.fillStyle = C.wall; c.fillRect(wallL, GROUND_Y - 62, wallR - wallL, 62);
@@ -832,18 +946,24 @@ function renderLandscape(c, withRuler, challenge) {
     }
   }
   c.lineCap = 'butt';
+  } // 사진이 없을 때 그리는 부분 끝
 
   // 건너편 모래밭
+  c.save();
+  if (photo) c.globalAlpha = FLIGHT_SAND_ALPHA;
   c.fillStyle = C.sand;
   c.beginPath(); c.moveTo(px(w.riverEnd) - 26, bottom);
   c.quadraticCurveTo(px(w.riverEnd) - 18, GROUND_Y + 8, px(w.riverEnd) + 16, GROUND_Y - 4);
   c.lineTo(W, GROUND_Y - 4); c.lineTo(W, bottom); c.closePath(); c.fill();
+  c.restore();
   c.fillStyle = C.sandDark;
   for (let x = px(w.riverEnd) + 60; x < W; x += 170) { circle(c, x, GROUND_Y + 50, 7); c.fill(); circle(c, x + 80, GROUND_Y + 92, 5); c.fill(); }
 
   // 망진산
   const topY = py(f.launchHeight - f.groundClearance);
   const foot = px(w.riverStart) - 8;
+  c.save();
+  if (photo) c.globalAlpha = FLIGHT_HILL_ALPHA;
   c.fillStyle = C.hillDark;
   c.beginPath(); c.moveTo(0, bottom); c.lineTo(0, topY + 90);
   c.lineTo(px(-10), topY + 90); c.bezierCurveTo(px(2), topY + 90, foot - 60, GROUND_Y - 60, foot + 24, bottom); c.closePath(); c.fill();
@@ -851,6 +971,7 @@ function renderLandscape(c, withRuler, challenge) {
   c.beginPath(); c.moveTo(0, bottom); c.lineTo(0, topY + 22);
   c.quadraticCurveTo(px(-14), topY - 6, px(1), topY);
   c.bezierCurveTo(px(7), topY + 80, foot - 70, GROUND_Y - 100, foot - 6, bottom); c.closePath(); c.fill();
+  c.restore();
   // 발사대
   c.fillStyle = C.wood; c.strokeStyle = C.ink; c.lineWidth = 4;
   c.beginPath(); c.moveTo(px(-13), topY + 2); c.lineTo(px(2), topY - 10); c.lineTo(px(2), topY + 4); c.lineTo(px(-13), topY + 16); c.closePath(); c.fill(); c.stroke();
@@ -859,31 +980,38 @@ function renderLandscape(c, withRuler, challenge) {
     c.fillStyle = C.ink;
     c.font = '800 52px system-ui, sans-serif';
     c.textAlign = 'left'; c.textBaseline = 'middle';
-    c.fillText(challenge ? TEXT.castle : TEXT.hill, 24, topY + 130);
-    if (!challenge) c.fillText(TEXT.castle, gx - 78, GROUND_Y - 30);
+    const label = photo ? haloText : (cc, t, x, y) => cc.fillText(t, x, y);
+    label(c, challenge ? TEXT.castle : TEXT.hill, 24, topY + 130);
+    // 사진에서는 진주성 이름을 촉석루 지붕 위에 쓴다
+    if (!challenge) { c.fillStyle = C.ink; label(c, TEXT.castle, gx - 78, photo ? GROUND_Y - 340 : GROUND_Y - 30); }
     c.fillStyle = '#1f5f5a'; // 강 이름은 추락 장면과 겹치지 않게 모래밭 쪽에
-    c.fillText('← ' + TEXT.river, px(w.riverEnd) + 24, GROUND_Y + 66);
-    if (challenge) renderGoal(c, topY);
+    label(c, '← ' + TEXT.river, px(w.riverEnd) + 24, GROUND_Y + 66);
+    if (challenge) renderGoal(c, topY, photo);
     renderRuler(c);
+    if (photo) drawCredit(c, RULER_Y, true); // 착지 표시와 겹치지 않게 언덕 쪽에
   }
 }
 
 // 도전 모드: 산 위의 성벽과 목표 지점 깃발
-function renderGoal(c, topY) {
+function renderGoal(c, topY, photo) {
   c.fillStyle = C.wall; c.fillRect(0, topY - 66, px(-15), 100);
   c.fillStyle = C.wallDark;
   for (let x = 6; x < px(-15) - 20; x += 44) c.fillRect(x, topY - 84, 26, 18);
 
   const gx = px(SUCCESS_DISTANCE);
+  c.save();
+  if (photo) c.globalAlpha = FLIGHT_SAND_ALPHA;
   c.fillStyle = '#fbf0c6'; // 목표 지점부터 모래밭 색을 밝게
   c.fillRect(gx, GROUND_Y - 4, W - gx, RULER_Y - GROUND_Y + 4);
+  c.restore();
   c.fillStyle = C.ink; c.fillRect(gx - 4, GROUND_Y - 230, 8, 234);
   c.beginPath(); c.moveTo(gx + 4, GROUND_Y - 230); c.lineTo(gx + 124, GROUND_Y - 192); c.lineTo(gx + 4, GROUND_Y - 154); c.closePath();
   fillStroke(c, C.orange);
   c.fillStyle = C.ink; c.font = '800 50px system-ui, sans-serif';
   c.textAlign = 'left'; c.textBaseline = 'middle';
-  c.fillText(TEXT.goalFlag, gx + 16, GROUND_Y - 110);
-  c.fillText(`${SUCCESS_DISTANCE}m`, gx + 16, GROUND_Y - 54);
+  const label = photo ? haloText : (cc, t, x, y) => cc.fillText(t, x, y);
+  label(c, TEXT.goalFlag, gx + 16, GROUND_Y - 110);
+  label(c, `${SUCCESS_DISTANCE}m`, gx + 16, GROUND_Y - 54);
 }
 
 // 도전 모드: 위에서 본 진주성 지도
@@ -1067,7 +1195,7 @@ function setBg(kind) {
   if (bgKind === kind) return;
   bgKind = kind;
   resetTransform(bgCtx);
-  if (kind === 'title') renderLandscape(bgCtx, false);
+  if (kind === 'title' || kind === 'story') renderPhotoBg(bgCtx, kind);
   else if (kind === 'flight') renderLandscape(bgCtx, true);
   else if (kind === 'flightChallenge') renderLandscape(bgCtx, true, true);
   else if (kind === 'castle') renderCastleMap(bgCtx);
@@ -1207,30 +1335,60 @@ screens.title = {
       game.mode = 'challenge';
       go('challengeIntro');
     }));
+    const n = loadRecords().length;
+    ui.append(button('records-btn', `${RECORD_TEXT.bookButton} (${n}/${RECORD_CARDS.length})`, () => go('records')));
   },
   draw(now) {
     drawBg();
     const bob = Math.sin(now / 600) * 10;
-    drawBigeo(ctx, game.pick, 1090, 660 + bob, 1, 4, Math.sin(now / 250) * 0.5 + 0.5);
-    drawHamo(ctx, 'title', 240, 640, 400, 470);
+    drawBigeo(ctx, game.pick, 1010, 680 + bob, 1, 4, Math.sin(now / 250) * 0.5 + 0.5);
+    drawHamo(ctx, 'title', 240, 595, 400, 470);
   },
   animated: true,
 };
 
-// ----- story -----
+// ----- story: 사진이 잘 보이도록 대사를 한 줄씩 보여 준다 -----
+// lines: [{ hamo, text }], lastLabel: 마지막 줄 버튼 글자, onDone: 마지막 줄 버튼을 눌렀을 때
+function storyDialog(scr, lines, lastLabel, onDone) {
+  setBg('story');
+  scr.line = 0;
+  const bubble = el('div', 'bubble story-bubble', lines[0].text);
+  const next = button('primary story-btn', lines.length > 1 ? TEXT.next : lastLabel, () => {
+    if (scr.line >= lines.length - 1) { onDone(); return; }
+    scr.line++;
+    bubble.textContent = lines[scr.line].text;
+    if (scr.line === lines.length - 1) next.textContent = lastLabel;
+    game.dirty = true;
+  });
+  ui.append(bubble, next);
+}
+
+function drawStoryHamo(lines, line) { drawHamo(ctx, lines[line].hamo, 245, 790, 440, 500); }
+
 screens.story = {
+  enter() { storyDialog(this, STORY.lines, TEXT.storyNext, () => go('build')); },
+  draw() { drawBg(); drawStoryHamo(STORY.lines, this.line); },
+};
+
+// ----- records: 비거 기록 도감 -----
+screens.records = {
   enter() {
-    setBg('title');
-    // STORY.history를 넣으면 말풍선 아래에 나온다
-    ui.append(el('div', 'bubble story-bubble' + (STORY.history ? '' : ' solo'), STORY.speech));
-    if (STORY.history) ui.append(el('p', 'abs story-note', STORY.history));
-    ui.append(button('primary big story-btn', TEXT.storyNext, () => go('build')));
+    setBg('paper');
+    const have = loadRecords();
+    this.done = have.length >= RECORD_CARDS.length;
+    ui.append(el('h2', 'abs records-title', RECORD_TEXT.bookButton));
+    ui.append(el('p', 'abs records-count', RECORD_TEXT.count.replace('{n}', have.length).replace('{all}', RECORD_CARDS.length)));
+    const grid = el('div', 'records-grid');
+    for (const card of RECORD_CARDS) {
+      const got = have.includes(card.id);
+      grid.append(el('div', 'record-cell' + (got ? '' : ' unknown'), got ? card.text : RECORD_TEXT.unknown));
+    }
+    ui.append(grid);
+    ui.append(el('div', 'bubble records-bubble', this.done ? RECORD_TEXT.complete : RECORD_TEXT.progress));
   },
   draw() {
     drawBg();
-    ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 6;
-    roundBox(ctx, 120, 100, 1680, 680, 56); ctx.fill(); ctx.stroke();
-    drawHamo(ctx, 'story', 340, 430, 400, 480);
+    drawHamo(ctx, this.done ? 'recordDone' : 'record', 150, 968, 200, 210);
   },
 };
 
@@ -1464,7 +1622,7 @@ screens.flight = {
 
 // ----- result -----
 function buildChart(compact) {
-  const barMax = compact ? 3.7 : 10.2;
+  const barMax = compact ? 3.1 : 9.4;
   const chart = el('div', 'sheet abs chart' + (compact ? ' compact' : ''));
   chart.append(el('h2', '', TEXT.chartTitle));
   const grid = el('div', 'chart-grid');
@@ -1513,11 +1671,15 @@ screens.result = {
     const dist = el('div', 'abs distance', String(fl.distance));
     dist.append(el('small', '', 'm'));
     ui.append(dist);
-    ui.append(el('div', 'bubble result-bubble', FEEDBACK[fl.feedback]));
+    const said = el('div', 'bubble result-bubble' + (fl.grade === 'best' ? ' two' : ''));
+    said.append(el('p', '', FEEDBACK[fl.feedback]));
+    if (fl.grade === 'best') said.append(el('p', '', TEXT.bestExtra));
+    ui.append(said);
     ui.append(buildChart());
     ui.append(button('primary result-retry', TEXT.retry, () => { game.isRetry = true; go('build'); }));
     ui.append(button('result-quiz', TEXT.toQuiz, () => go('quiz')));
     ui.append(button('result-other', TEXT.tryChallenge, () => switchMode('challenge')));
+    ui.append(el('p', 'abs result-note', TEXT.resultNote));
   },
   // 도전 모드 결과: 기존 결과 + 목표 안내 + 전용 피드백 + 버튼 3개
   enterChallenge(fl) {
@@ -1534,8 +1696,10 @@ screens.result = {
     ui.append(el('div', 'abs goal-line', goalText));
 
     const bubble = el('div', 'bubble challenge-bubble' + (ok ? ' ok' : ''));
-    if (ok) bubble.append(el('p', '', S.success));
-    else {
+    if (ok) {
+      bubble.append(el('p', '', S.success));
+      if (fl.grade === 'best') bubble.append(el('p', 'cheer', TEXT.bestExtra));
+    } else {
       bubble.append(el('p', '', FEEDBACK[fl.feedback]));
       const key = challengeFeedbackKey(game.parts, game.pick);
       if (key) bubble.append(el('p', 'extra', CHALLENGE_FEEDBACK[key]));
@@ -1545,6 +1709,7 @@ screens.result = {
     ui.append(button('primary c-retry', S.retryFull, () => go('collect')));
     ui.append(button('c-quiz', TEXT.toQuiz, () => go('quiz')));
     ui.append(button('c-other', TEXT.tryEasy, () => switchMode('easy')));
+    ui.append(el('p', 'abs result-note', TEXT.resultNote));
   },
   draw() {
     drawBg();
@@ -1587,12 +1752,7 @@ screens.quiz = {
         game.quizHamo = choice.correct ? 'quizRight' : 'quizWrong';
         game.dirty = true;
         ui.append(el('div', 'bubble quiz-bubble', choice.correct ? q.right : q.wrong));
-        ui.append(button('quiz-home', TEXT.home, goHome));
-        if (game.mode === 'challenge') {
-          ui.append(button('primary quiz-again', CHALLENGE_STORY.retryFull, () => go('collect')));
-        } else {
-          ui.append(button('primary quiz-again', TEXT.flyAgain, () => { game.isRetry = true; go('build'); }));
-        }
+        ui.append(button('primary quiz-next', TEXT.next, () => go('place')));
       });
       return b;
     });
@@ -1606,23 +1766,28 @@ screens.quiz = {
   },
 };
 
-// ----- challengeIntro: 도전 모드 상황 소개 -----
-screens.challengeIntro = {
+// ----- place: 퀴즈를 마친 뒤 진짜 장소 안내 -----
+screens.place = {
   enter() {
-    setBg('title');
-    const [a, b] = CHALLENGE_STORY.intro;
-    ui.append(el('div', 'bubble intro-bubble first', a.text));
-    ui.append(el('div', 'bubble intro-bubble second', b.text));
-    ui.append(button('primary big story-btn', CHALLENGE_STORY.startButton, () => go('collect')));
+    setBg('paper');
+    ui.append(el('div', 'bubble place-bubble', PLACE_INFO.text));
+    ui.append(button('quiz-home', TEXT.home, goHome));
+    if (game.mode === 'challenge') {
+      ui.append(button('primary quiz-again', CHALLENGE_STORY.retryFull, () => go('collect')));
+    } else {
+      ui.append(button('primary quiz-again', TEXT.flyAgain, () => { game.isRetry = true; go('build'); }));
+    }
   },
   draw() {
     drawBg();
-    ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 6;
-    roundBox(ctx, 120, 130, 1680, 690, 56); ctx.fill(); ctx.stroke();
-    const [a, b] = CHALLENGE_STORY.intro;
-    drawHamo(ctx, a.hamo, 320, 305, 280, 280);
-    drawHamo(ctx, b.hamo, 320, 635, 280, 280);
+    drawHamo(ctx, 'place', 400, 480, 620, 600);
   },
+};
+
+// ----- challengeIntro: 도전 모드 상황 소개 -----
+screens.challengeIntro = {
+  enter() { storyDialog(this, CHALLENGE_STORY.intro, CHALLENGE_STORY.startButton, () => go('collect')); },
+  draw() { drawBg(); drawStoryHamo(CHALLENGE_STORY.intro, this.line); },
 };
 
 // ----- collect: 60초 부품 모으기 -----
@@ -1634,12 +1799,13 @@ function newCollect() {
   return {
     seed, phase: 'play', startMs: now, lastMs: now, endMs: 0,
     rng: createRng(seed + 1000),
-    ayo: { x: CHALLENGE.start.x, y: CHALLENGE.start.y }, path: [], intent: null, moving: false,
+    ayo: { x: CHALLENGE.start.x, y: CHALLENGE.start.y }, path: [], intent: null, moving: false, flip: false,
     spots: HIDE_SPOTS.map((s, i) => ({ ...s, loot: loot[i], opened: false, hint: null })),
     villagers: VILLAGERS.map(v => ({ ...v, talked: false })),
     loose: [],      // 바닥이나 열린 장소에 남아 있는 부품 { type, x, y, sx, sy }
     bag: Array(BAG_SIZE).fill(null),
-    empties: 0, busy: null, popup: null, confirm: false, pauseAt: 0,
+    empties: 0,     // 부품이 안 나온 곳 수(꽝 + 옛 책 조각)
+    busy: null, popup: null, card: null, confirm: false, pauseAt: 0,
     toast: null, hintUntil: 0, keys: new Set(), usedKeys: false, slots: [],
   };
 }
@@ -1682,7 +1848,7 @@ screens.collect = {
   // 가방 칸을 누르면 아요 자리에 내려놓는다(겹치면 살짝 옆으로)
   drop(i) {
     const c = game.collect;
-    if (c.phase !== 'play' || c.confirm || !c.bag[i]) return;
+    if (c.phase !== 'play' || c.confirm || c.card || !c.bag[i]) return;
     let x = c.ayo.x, y = c.ayo.y;
     for (const [dx, dy] of [[0, 0], [60, 0], [-60, 0], [0, 60], [0, -60], [60, 60], [-60, 60]]) {
       const free = !isBlocked(c.ayo.x + dx, c.ayo.y + dy) && !c.loose.some(l => Math.hypot(l.x - c.ayo.x - dx, l.y - c.ayo.y - dy) < 50);
@@ -1698,8 +1864,7 @@ screens.collect = {
     const c = game.collect;
     if (c.confirm || c.phase !== 'play') return;
     c.confirm = true;
-    c.pauseAt = performance.now();
-    c.keys.clear();
+    this.pauseClock();
     const back = el('div', 'confirm-back');
     const box = el('div', 'sheet confirm-box');
     box.append(el('p', '', CHALLENGE_STORY.quitAsk));
@@ -1710,6 +1875,11 @@ screens.collect = {
     ui.append(back);
     no.focus();
   },
+  pauseClock() {
+    const c = game.collect;
+    c.pauseAt = performance.now();
+    c.keys.clear();
+  },
   resume(back) {
     const c = game.collect;
     const paused = performance.now() - c.pauseAt;
@@ -1719,6 +1889,7 @@ screens.collect = {
     if (c.busy) { c.busy.start += paused; c.busy.until += paused; }
     if (c.toast) c.toast.until += paused;
     c.confirm = false;
+    c.card = null;
     back.remove();
     if (document.activeElement) document.activeElement.blur();
     game.lastInput = performance.now();
@@ -1742,7 +1913,7 @@ screens.collect = {
   // ----- 누른 곳에 무엇이 있는지 찾아서 그쪽으로 걸어간다 -----
   tapAt(x, y) {
     const c = game.collect;
-    if (c.phase !== 'play' || c.confirm || c.busy || c.popup) return;
+    if (c.phase !== 'play' || c.confirm || c.card || c.busy || c.popup) return;
     c.usedKeys = false;
     const R = CHALLENGE.tapRadius;
     const near = (list, skip) => {
@@ -1786,7 +1957,7 @@ screens.collect = {
   },
   useNearest() {
     const c = game.collect;
-    if (c.phase !== 'play' || c.confirm || c.busy || c.popup) return;
+    if (c.phase !== 'play' || c.confirm || c.card || c.busy || c.popup) return;
     const target = this.nearestReach();
     if (target) { c.path = []; c.intent = null; this.begin(target); }
   },
@@ -1806,6 +1977,9 @@ screens.collect = {
       if (s.loot === 'empty') {
         c.empties++;
         this.showToast(CHALLENGE_STORY.emptyLoot);
+      } else if (s.loot === 'record') {
+        c.empties++;
+        this.openRecord();
       } else {
         const item = { type: s.loot, x: s.x, y: s.y - 12, sx: s.sx, sy: s.sy };
         c.loose.push(item);
@@ -1821,6 +1995,28 @@ screens.collect = {
       c.hintUntil = performance.now() + CHALLENGE.hintShowSeconds * 1000;
     }
   },
+  // ----- 옛 책 조각: 가방에 넣지 않고 카드로 읽는다. 읽는 동안 시계가 멈춘다 -----
+  openRecord() {
+    const c = game.collect, got = pickRecord(), R = RECORD_TEXT;
+    c.card = got.card;
+    this.pauseClock();
+    const back = el('div', 'confirm-back');
+    const box = el('div', 'sheet record-popup');
+    const pic = el('canvas');
+    pic.width = 160; pic.height = 160;
+    drawHamo(pic.getContext('2d'), got.complete ? 'recordDone' : 'record', 80, 80, 150, 150);
+    const n = loadRecords().length;
+    box.append(pic, el('h2', '', R.found),
+      el('p', 'record-tag', got.fresh ? R.fresh.replace('{n}', n).replace('{all}', RECORD_CARDS.length) : R.again),
+      el('p', 'record-text', got.card.text));
+    if (got.complete) box.append(el('p', 'record-done', R.complete));
+    const ok = button('primary record-ok', R.ok, () => this.resume(back));
+    box.append(ok);
+    back.append(box);
+    ui.append(back);
+    ok.focus();
+  },
+
   // ----- 부품 팝업: 담기 / 두고 가기 -----
   openPopup(item) {
     const c = game.collect;
@@ -1854,7 +2050,7 @@ screens.collect = {
 
   update(now) {
     const c = game.collect;
-    if (c.confirm) return; // 확인 창이 떠 있으면 모두 멈춘다
+    if (c.confirm || c.card) return; // 확인 창이나 기록 카드가 떠 있으면 모두 멈춘다
     const dt = Math.min(0.05, (now - c.lastMs) / 1000);
     c.lastMs = now;
     if (c.phase === 'timeup') {
@@ -1885,6 +2081,7 @@ screens.collect = {
       const len = Math.hypot(dx, dy);
       if (len) {
         dx *= step / len; dy *= step / len;
+        if (dx) c.flip = dx > 0;
         const x0 = c.ayo.x, y0 = c.ayo.y;
         if (!isBlocked(c.ayo.x + dx, c.ayo.y)) c.ayo.x += dx;
         if (!isBlocked(c.ayo.x, c.ayo.y + dy)) c.ayo.y += dy;
@@ -1897,6 +2094,7 @@ screens.collect = {
     while (left > 0 && c.path.length) {
       const p = c.path[0];
       const d = Math.hypot(p.x - c.ayo.x, p.y - c.ayo.y);
+      if (Math.abs(p.x - c.ayo.x) > 1) c.flip = p.x > c.ayo.x;
       if (d <= left) { c.ayo.x = p.x; c.ayo.y = p.y; c.path.shift(); left -= d; }
       else { c.ayo.x += (p.x - c.ayo.x) / d * left; c.ayo.y += (p.y - c.ayo.y) / d * left; left = 0; }
       c.moving = true;
@@ -1912,7 +2110,7 @@ screens.collect = {
     if (game.screen !== 'collect') return; // update에서 화면이 넘어간 경우
     const c = game.collect;
     drawBg();
-    const t = c.confirm ? c.pauseAt : now;
+    const t = c.confirm || c.card ? c.pauseAt : now;
     for (const s of c.spots) this.drawSpot(s, t);
     for (const it of c.loose) drawItem(ctx, it.type, it.x, it.y, 0.9);
     for (const v of c.villagers) drawVillager(ctx, v, t);
@@ -1965,23 +2163,17 @@ screens.collect = {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('!', x, y + 1);
   },
-  // 위에서 본 아요: 머리 위주로 단순하게
+  // 지도 위의 아요: 비거에 탄 모습과 같은 이미지를 작게, 걷는 방향에 따라 좌우 반전
+  // (이미지 속 아요는 꼬리가 오른쪽이라 왼쪽을 보는 모습이 기본)
   drawAyoTop(now) {
-    const c = game.collect, a = c.ayo;
+    const c = game.collect, a = c.ayo, h = AYO_SIZE.onMap;
     const y = a.y + (c.moving ? Math.sin(now / 80) * 3 : 0);
-    if (!images.ayo) {
-      ctx.strokeStyle = C.ink; ctx.lineWidth = 10; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(a.x - 16, y + 26); ctx.quadraticCurveTo(a.x - 46, y + 34, a.x - 40, y + 8); ctx.stroke();
-      ctx.strokeStyle = C.orange; ctx.lineWidth = 6; ctx.stroke();
-      ctx.lineCap = 'butt';
-      ctx.beginPath(); ctx.ellipse(a.x, y + 18, 24, 20, 0, 0, Math.PI * 2); fillStroke(ctx, C.orange, 3.5);
-    }
-    drawAyo(ctx, a.x, y - 8, 28);
+    drawAyo(ctx, a.x, y - 16, h, c.flip);
     // 무거우면 머리 위에 땀
     if (c.bag.some(t => t && ITEMS[t].heavy)) {
       ctx.fillStyle = '#6fc3ec'; ctx.strokeStyle = C.ink; ctx.lineWidth = 2.5;
       const wob = Math.sin(now / 160) * 3;
-      for (const [dx, dy, s] of [[30, -48, 1], [-30, -52, 0.8]]) {
+      for (const [dx, dy, s] of [[44, -56, 1], [-44, -60, 0.8]]) {
         const sx = a.x + dx, sy = y + dy + wob;
         ctx.beginPath(); ctx.moveTo(sx, sy - 13 * s);
         ctx.quadraticCurveTo(sx + 10 * s, sy + 3 * s, sx, sy + 7 * s);
@@ -2031,7 +2223,7 @@ screens.noParts = {
 // =============================================================
 function frame(now) {
   // 모으기 단계에서는 자동 리셋을 하지 않는다
-  if (game.screen === 'collect' && !game.collect.confirm) game.lastInput = now;
+  if (game.screen === 'collect' && !game.collect.confirm && !game.collect.card) game.lastInput = now;
   const scr = screens[game.screen];
   // 60초 동안 입력이 없으면 타이틀로
   if (now - game.lastInput > CONFIG.idleResetSeconds * 1000) {
@@ -2078,7 +2270,7 @@ async function boot() {
     touched();
     if (game.screen !== 'collect') return;
     const c = game.collect;
-    if (c.confirm || c.popup) return; // 창이 떠 있으면 버튼이 키를 받는다
+    if (c.confirm || c.card || c.popup) return; // 창이 떠 있으면 버튼이 키를 받는다
     if (ARROWS.includes(e.key)) { e.preventDefault(); c.keys.add(e.key); }
     else if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) {
       e.preventDefault();

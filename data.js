@@ -76,8 +76,12 @@ const GRADE_TEXT = {
 };
 
 // ----- 이야기 화면 -----
+// 대사는 한 줄씩 넘어갑니다. hamo = HAMO_IMG의 이름
 const STORY = {
-  speech: '옛날 진주성 사람들이 하늘을 나는 비거를 만들었대! 우리도 만들어 볼까?',
+  lines: [
+    { hamo: 'story', text: '옛날 책에 이런 이야기가 전해져. 임진왜란 때 진주성 사람들이 하늘을 나는 수레, 비거를 만들었대!' },
+    { hamo: 'storyShape', text: '모양은 따오기를 닮았다고 적혀 있어. 진짜 모습은 아무도 몰라서, 우리가 직접 만들어 보는 거야!' },
+  ],
   // TODO: 비거 체험관 자료로 확인 후 문구 추가
 };
 
@@ -120,6 +124,24 @@ const QUIZ = [
     wrong: '아쉬워! 뒤가 무거우면 뒤로 뒤집혀. 무게추는 가운데가 좋아.',
   },
   {
+    question: '옛 책에서 비거는 어떤 새를 닮았다고 했을까?',
+    choices: [
+      { text: '따오기', correct: true },
+      { text: '독수리', correct: false },
+    ],
+    right: '맞아! 옛 책에는 따오기를 닮았다고 적혀 있어.',
+    wrong: '아쉬워! 옛 책에는 따오기를 닮았다고 적혀 있어.',
+  },
+  {
+    question: '비거 설계도는 지금 남아 있을까?',
+    choices: [
+      { text: '아니요, 남아 있지 않아요', correct: true },
+      { text: '네, 박물관에 있어요', correct: false },
+    ],
+    right: '맞아! 설계도가 없어서 사람들이 여러 모양으로 복원해 보고 있어.',
+    wrong: '아쉬워! 설계도는 남아 있지 않아. 그래서 여러 모양으로 복원해 보고 있어.',
+  },
+  {
     mode: 'challenge', // 도전 모드에서만 나오는 문제
     question: '가방이 작을 때는 어떻게 해야 할까?',
     choices: [
@@ -134,7 +156,8 @@ const QUIZ = [
 // ----- 하모 이미지(assets/hamo/ 안의 파일 이름) -----
 const HAMO_IMG = {
   title: 'bow.png',         // 타이틀·끝인사
-  story: 'face_smile.png',  // 이야기
+  story: 'face_smile.png',  // 이야기 첫 줄
+  storyShape: 'face_wink.png', // 이야기 둘째 줄
   build: 'face_grin.png',   // 처음 조립
   retry: 'face_wink.png',   // 다시 도전 유도
   crash: 'face_shock.png',  // 결과: 추락
@@ -145,11 +168,15 @@ const HAMO_IMG = {
   quiz: 'study.png',        // 퀴즈
   quizRight: 'face_smile.png', // 퀴즈 정답
   quizWrong: 'face_cry.png',   // 퀴즈 오답
-  challengeStart: 'face_wow.png',    // 도전 모드 소개 첫 줄
-  challengeBag: 'face_smile.png',    // 도전 모드 소개 둘째 줄
+  challengeBook: 'study.png',        // 도전 모드 소개: 옛 책 이야기
+  challengeStart: 'face_wow.png',    // 도전 모드 소개: 상황
+  challengeBag: 'face_smile.png',    // 도전 모드 소개: 가방
   challengeTimeUp: 'face_shock.png', // 시간 끝
   challengeNoParts: 'face_cry.png',  // 부품이 모자랄 때
   challengeSuccess: 'face_wow.png',  // 소식 전달 성공
+  place: 'bow.png',                  // 진짜 장소 안내
+  record: 'face_smile.png',          // 옛 책 조각을 찾았을 때, 도감
+  recordDone: 'face_wow.png',        // 기록을 전부 모았을 때
 };
 
 // ----- 화면 문구 -----
@@ -164,6 +191,9 @@ const TEXT = {
   topTitle: '오늘의 최고 기록 TOP 5', //  : TOP과 5가 줄바꿈으로 갈라지지 않게 하는 띄어쓰기
   topEmpty: '아직 없어요',
   storyNext: '비거 만들러 가기',
+  next: '다음',
+  bestExtra: '아요가 신나서 땡초라도 먹은 것 같아!', // 결과가 "최고 기록!"일 때 더 나오는 하모 대사
+  resultNote: '비거의 진짜 모습은 아무도 몰라. 오늘 네가 만든 비거도 하나의 복원 아이디어야!',
   buildHello: '부품을 고르면 비거 모양이 바뀌어!',
   buildRetry: '이번엔 뭘 바꿔 볼까?',
   wingLabel: '날개',
@@ -183,6 +213,39 @@ const TEXT = {
   goalFlag: '아군 진영',
   tryChallenge: '도전 모드 해보기',
   tryEasy: '쉬운 모드로 연습하기',
+};
+
+// ----- 진짜 장소 안내(퀴즈를 마친 뒤) -----
+const PLACE_INFO = {
+  text: '진주 망경공원에 가면 비거 숲길과 비거 육교가 있어. 비거 모양을 찾아봐!',
+};
+
+// ----- 사진 배경(assets/bg/). 파일이 없으면 기존 그림 배경을 씁니다 -----
+const BG_OVERLAY = 0.25;     // 사진 위 흰 막의 불투명도(0~1)
+const BG_DESATURATE = 0.15;  // 채도를 낮추는 정도(0 = 그대로, 1 = 흑백)
+const PHOTO_CREDIT = '사진: 진주시'; // 사진 하단 구석에 나오는 출처
+const GROUND_Y = 840;        // 비행 화면의 땅·강 높이(화면 1920×1080 기준, 사진이 따라 움직임, 권장 700~840)
+                             // 작게 하면 출발 높이도 함께 올라가서 화면 위로 나갈 수 있습니다.
+const FLIGHT_HILL_ALPHA = 0.8;  // 사진 위 망진산 언덕 그림의 불투명도
+const FLIGHT_SAND_ALPHA = 0.7;  // 사진 위 건너편 모래밭 그림의 불투명도
+
+// focusX·focusY = 화면 가운데에 올 사진 위치(0~1), bankY = 사진 속 강둑 높이(0~1, 위가 0)
+const BG_PHOTOS = {
+  title:  { file: 'title.jpg',  focusX: 0.5, focusY: 0.5 },
+  story:  { file: 'story.jpg',  focusX: 0.6, focusY: 0.58 },
+  flight: {
+    file: 'flight.jpg', bankY: 0.545,
+    focusX: 0.527,           // 쉬운 모드: 촉석루가 오른쪽에 보이게
+    focusXChallenge: 0.31,   // 도전 모드: 왼쪽이 성이므로 건너편은 숲만 보이게
+  },
+};
+
+// ----- 아요(하모 프렌즈의 삵, assets/ayo.png) 크기 -----
+const AYO_SIZE = {
+  onBigeo: 150,   // 비거에 탔을 때 이미지 전체 높이(조립 화면에서 하모 얼굴과 비슷한 높이)
+  seatX: 50,      // 비거 몸통 가운데에서 앞쪽으로 떨어진 자리
+  showTop: 0.82,  // 비거에 탔을 때 보이는 윗부분 비율(나머지는 몸통에 가려짐)
+  onMap: 92,      // 모으기 지도에서 이미지 높이
 };
 
 // =============================================================
@@ -277,7 +340,8 @@ const LOOT_TABLE = [
   { item: 'paper', count: 3 },
   { item: 'tornPaper', count: 1 },
   { item: 'string', count: 1 },
-  { item: 'empty', count: 3 },
+  { item: 'empty', count: 1 },
+  { item: 'record', count: 2 }, // 옛 책 조각: 가방에 넣지 않고 카드로 읽음
 ];
 
 // 부품: name = 이름, short = 가방 칸 이름, use = 용도(body 몸통 / wing 날개 / string 끈)
@@ -290,6 +354,30 @@ const ITEMS = {
   paper:         { name: '깨끗한 한지',   short: '한지',      use: 'wing', hintRank: 1 },
   tornPaper:     { name: '찢어진 한지',   short: '찢긴 한지', use: 'wing', torn: true, hintRank: 3 },
   string:        { name: '튼튼한 끈',     short: '끈',        use: 'string', hintRank: 1 },
+  record:        { name: '옛 책 조각',    short: '옛 책',     use: 'record', hintRank: 2 },
+};
+
+// 옛 기록 카드: 숨김 장소에서 옛 책 조각을 찾으면 아직 안 모은 것 중 하나가 나옵니다.
+// id는 저장에 쓰이니 문장을 고쳐도 id는 그대로 두세요.
+const RECORD_CARDS = [
+  { id: 'shape',  text: '옛 책에는 비거가 따오기를 닮았다고 적혀 있어.' },
+  { id: 'people', text: '옛 책에는 비거에 네 사람쯤 탈 수 있었다고 적혀 있어.' },
+  { id: 'wind',   text: '옛 책에는 바람을 일으켜 하늘로 떠올랐다고 적혀 있어.' },
+  { id: 'books',  text: '비거 이야기는 『오주연문장전산고』, 『여암전서』 같은 옛 책에 전해져.' },
+  { id: 'maker',  text: '비거를 만든 사람은 정평구라는 군관이라고 전해져.' },
+  { id: 'plan',   text: '비거를 그린 설계도는 남아 있지 않아. 그래서 사람들이 여러 모양으로 복원해 보고 있어.' },
+];
+
+const RECORD_TEXT = {
+  found: '옛 책 조각을 찾았어!',
+  fresh: '새 기록 {n}/{all}',
+  again: '이미 모은 기록이야',
+  ok: '확인',
+  bookButton: '비거 기록 도감',
+  count: '{n}/{all}장',
+  unknown: '?',
+  progress: '도전 모드에서 옛 책 조각을 찾으면 기록이 모여!',
+  complete: '기록을 전부 모았어! 이제 너도 비거 박사야!',
 };
 
 // 마을 사람 3명: x·y = 위치, sx·sy = 아요가 서서 이야기하는 자리
@@ -309,6 +397,7 @@ const HINT_TEMPLATES = {
 // 도전 모드 문구
 const CHALLENGE_STORY = {
   intro: [
+    { hamo: 'challengeBook', text: '옛 책에는 비거로 성 밖과 소식을 주고받았다는 이야기가 전해져.' },
     { hamo: 'challengeStart', text: '성 밖에 소식을 전해야 해! 60초 안에 부품을 모아서 비거를 만들자!' },
     { hamo: 'challengeBag', text: '가방에는 5개까지만 담을 수 있어. 잘 골라야 해!' },
   ],
