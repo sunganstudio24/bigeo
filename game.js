@@ -467,150 +467,11 @@ function runAllCombos() {
   return { rows, styles, problems };
 }
 
-// 부품 조합 하나를 끝까지 계산해서 궤적과 결과를 돌려준다
-// liftScale: 들어 올리는 힘 배율(도전 모드에서 끈이 없을 때 사용, 쉬운 모드는 1)
-// ctl(없으면 자동 비행): { angle, power 발사 각도·세기, drums 두드린 시간 목록, thermal 상승 기류 사용 }
-function simulateFlight(wingKey, bodyKey, ballastKey, liftScale = 1, ctl = null) {
-  const f = CONFIG.flight;
-  const wing = CONFIG.wings[wingKey];
-  const body = CONFIG.bodies[bodyKey];
-  const ballast = CONFIG.ballasts[ballastKey];
-  const ratio = wing.lift * liftScale / body.weight;
-
-  const mode = ballast.behavior === 'flip' ? 'flip' : body.alwaysCrash ? 'heavy' : 'glide';
-  const dive = ballast.behavior === 'dive';
-  const cruise = f.cruiseSpeed / wing.drag;
-  const K = CONTROL, D = K.drum;
-  // 쇠 몸통·뒤 무게추는 어떻게 쏘아도 같은 추락: 발사 각도·세기는 활공할 때만 적용
-  const aimed = !!ctl && ctl.angle !== undefined;
-  const aimOff = aimed ? ctl.angle - K.optAngle : 0;
-  const power = aimed ? ctl.power : 1;
-  const useAim = aimed && mode === 'glide';
-  const sink = f.sinkBase / Math.pow(ratio, f.glideSharpness)
-    * (useAim ? 1 + K.angleSink * Math.pow(aimOff / 30, 2) + K.powerSink * (1 - power) : 1);
-
-  let x = 0, y = f.launchHeight, t = 0, step = 0;
-  let vx = useAim ? f.launchSpeed * power * (1 - K.highSpeedLoss * Math.max(0, aimOff) / 30) : f.launchSpeed;
-  let vy = useAim ? f.launchLift + K.riseRate * aimOff : f.launchLift;
-  let pitch = aimed ? ctl.angle : 8;
-  const drums = ctl && ctl.drums ? ctl.drums : [];
-  const thermals = ctl && ctl.thermal ? K.thermals : [];
-  let nextDrum = 0;
-  const samples = [{ t: 0, x, y, pitch }];
-
-  while (y > f.groundClearance && t < 30) {
-    const dt = SIM_STEP;
-    // 배 두드리기: 내려갈 때 더 잘 듣고, 무거운 몸통일수록 약함(뒤 무게추는 소용없음)
-    while (nextDrum < drums.length && drums[nextDrum] <= t) {
-      nextDrum++;
-      if (mode === 'flip') continue;
-      const e = (D.bodyEffect[bodyKey] === undefined ? 1 : D.bodyEffect[bodyKey]) * (vy < 0 ? D.fallingScale : D.risingScale);
-      vy += D.lift * e;
-      vx += D.push * e;
-    }
-    if (mode === 'glide') for (const z of thermals) if (x >= z.from && x <= z.to) vy += z.power * dt;
-    if (mode === 'flip') {
-      // 뒤 무게추: 잠깐 솟았다가 뒤로 뒤집혀 떨어진다
-      if (t < f.flipRiseTime) {
-        vy += f.flipRisePower * Math.min(ratio, 1.2) * dt;
-        pitch += (70 - pitch) * Math.min(1, 3 * dt);
-      } else {
-        vy -= f.gravity * dt;
-        pitch += f.flipSpin * dt;
-      }
-      vx += -vx * wing.flipSlow * dt;
-    } else if (mode === 'heavy') {
-      // 쇠 몸통: 날개가 버티지 못하고 떨어진다
-      const fall = f.gravity * (1 - Math.min(0.75, ratio * f.heavyLiftShare)) * (dive ? 1.25 : 1);
-      vy -= fall * dt;
-      vx += -vx * f.heavySlow * dt;
-      pitch += ((dive ? -75 : -45) - pitch) * Math.min(1, 1.5 * dt);
-    } else {
-      // 활공: 하강 속도와 앞 속도가 목표값으로 천천히 맞춰진다
-      const target = sink * (dive ? 1 + f.diveRate * t : 1);
-      vy += (-target - vy) * Math.min(1, f.sinkResponse * dt);
-      vx += (cruise - vx) * Math.min(1, dt);
-      const pathAngle = Math.atan2(vy, vx) * 180 / Math.PI;
-      const wanted = dive ? Math.max(-f.diveMaxPitch - 25, pathAngle - 14 * t) : clamp(pathAngle * 0.6, -18, 12);
-      pitch += (wanted - pitch) * Math.min(1, 3 * dt);
-    }
-    x += vx * dt;
-    y += vy * dt;
-    t += dt;
-    step++;
-    if (step % SAMPLE_EVERY === 0) samples.push({ t, x, y, pitch });
-  }
-  samples.push({ t, x, y: Math.max(y, f.groundClearance), pitch });
-
-  const crashed = !!(body.alwaysCrash || ballast.alwaysCrash);
-  const distance = Math.round(x);
-  const w = CONFIG.world;
-  const grade = gradeOf(distance, crashed);
-  return {
-    wing: wingKey, body: bodyKey, ballast: ballastKey, liftScale,
-    angle: aimed ? Math.round(ctl.angle) : null, drumsUsed: drums.length,
-    samples, crashed, distance, grade,
-    feedback: feedbackKey(wingKey, bodyKey, ballastKey),
-    inRiver: x >= w.riverStart && x < w.riverEnd,
-    simSeconds: t,
-    playSeconds: clamp(t, f.minPlaySeconds, f.maxPlaySeconds),
-  };
-}
-
 function gradeOf(distance, crashed) {
   if (crashed) return 'crash';
   if (distance >= CONFIG.grades.bestFrom) return 'best';
   if (distance >= CONFIG.grades.goodFrom) return 'good';
   return 'low';
-}
-
-// 피드백 우선순위: 위에서 먼저 맞는 것 하나만
-function feedbackKey(wingKey, bodyKey, ballastKey) {
-  if (CONFIG.ballasts[ballastKey].behavior === 'flip') return 'ballastBack';
-  if (CONFIG.bodies[bodyKey].alwaysCrash) return 'ironBody';
-  if (CONFIG.ballasts[ballastKey].behavior === 'dive') return 'ballastFront';
-  if (wingKey === 'small') return 'smallWing';
-  return 'balanced';
-}
-
-// 예전 3가지 고르기 27조합 검사(도전 모드 연결 전까지 남겨 둠) — runLegacyCombos()
-function runLegacyCombos() {
-  const rows = [], problems = [];
-  for (const wing of Object.keys(CONFIG.wings))
-    for (const body of Object.keys(CONFIG.bodies))
-      for (const ballast of Object.keys(CONFIG.ballasts)) {
-        const a = simulateFlight(wing, body, ballast);
-        const b = simulateFlight(wing, body, ballast);
-        const name = `${CONFIG.wings[wing].name} + ${CONFIG.bodies[body].name} + ${CONFIG.ballasts[ballast].name}`;
-        rows.push({
-          조합: name, '거리(m)': a.distance, 등급: GRADE_TEXT[a.grade],
-          '하모 설명': a.feedback, 착지: a.inRiver ? '남강' : '모래밭',
-          '비행(초)': +a.playSeconds.toFixed(1),
-        });
-        const mustCrash = body === 'iron' || ballast === 'back';
-        if (mustCrash !== (a.grade === 'crash')) problems.push(`${name}: 추락 규칙 위반`);
-        if (a.distance !== b.distance || a.samples.length !== b.samples.length) problems.push(`${name}: 결과가 매번 다름`);
-        if (ballast === 'front' && !mustCrash && a.grade !== 'low') problems.push(`${name}: 앞 무게추는 "조금 날았어"여야 함`);
-        if (wing === 'small' && !mustCrash && a.grade !== 'low') problems.push(`${name}: 작은 날개는 "조금 날았어"여야 함`);
-        if (a.feedback === 'balanced' && a.grade !== 'good' && a.grade !== 'best') problems.push(`${name}: 칭찬 대사인데 등급이 낮음`);
-        if (a.crashed !== a.inRiver) problems.push(`${name}: 추락은 남강, 그 외는 모래밭이어야 함`);
-        if (a.simSeconds > CONFIG.flight.maxPlaySeconds) problems.push(`${name}: 비행 ${a.simSeconds.toFixed(1)}초(6초 초과, 빠르게 재생됨)`);
-      }
-  const best = simulateFlight('big', 'bamboo', 'center');
-  rows.forEach(r => {
-    if (!r.조합.startsWith('큰 날개 + 대나무 + 가운데') && r['거리(m)'] >= best.distance) problems.push(`${r.조합}: 최적 조합보다 멀리 감`);
-    if (r.조합 !== '큰 날개 + 대나무 + 가운데' && r.등급 === GRADE_TEXT.best) problems.push(`${r.조합}: 최적 조합 외에 최고 기록`);
-  });
-  if (best.grade !== 'best') problems.push('최적 조합이 최고 기록이 아님');
-  // 뒤 무게추: 날개가 클수록 추락 전에 조금 더 멀리 간다
-  for (const body of Object.keys(CONFIG.bodies)) {
-    const d = ['small', 'normal', 'big'].map(w => simulateFlight(w, body, 'back').distance);
-    if (!(d[0] < d[1] && d[1] < d[2])) problems.push(`${CONFIG.bodies[body].name} + 뒤: 작은 < 보통 < 큰 순서가 아님(${d.join(', ')})`);
-  }
-  console.table(rows);
-  if (problems.length) console.warn('문제 ' + problems.length + '건:\n' + problems.join('\n'));
-  else console.log('27가지 조합 검사 통과');
-  return { rows, problems };
 }
 
 // =============================================================
@@ -634,7 +495,7 @@ function stageSpots(stage) { return stage.spots.map(id => HIDE_SPOTS.find(s => s
 function shuffleLoot(seed, stage) {
   const rng = createRng(seed);
   const pool = [];
-  for (const row of stage.loot) for (let i = 0; i < row.count; i++) pool.push(row.item);
+  for (const row of LOOT_TABLE[stage.id]) for (let i = 0; i < row.count; i++) pool.push(row.item);
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -797,30 +658,69 @@ function pathLength(from, to) {
   return len;
 }
 
-// 가방 내용(['bamboo', 'paper', ...])을 조립에 쓸 수 있는 정보로 바꾼다
-// stage가 끈을 쓰지 않는 단계면 끈이 없어도 벌칙이 없다
-function partsFromBag(bag, empties = 0, stage = null) {
-  const items = bag.filter(Boolean);
-  const count = t => items.filter(x => x === t).length;
-  const torn = items.filter(t => ITEMS[t].torn).length;
-  const clean = items.filter(t => ITEMS[t].use === 'wing' && !ITEMS[t].torn).length;
-  const paper = clean + torn * STATE_EFFECT.tornPaperValue;
-  const bodies = [...new Set(items.filter(t => ITEMS[t].use === 'body').map(t => ITEMS[t].bodyKey))];
-  const hasString = items.some(t => ITEMS[t].use === 'string') || !!(stage && !stage.needString);
-  const traps = items.filter(t => ITEMS[t].use === 'trap');
-  // 튼튼한 대나무가 있으면 그것을 쓰고, 금 간 대나무만 있을 때 흔들린다
-  const crackedOnly = count('crackedBamboo') > 0 && count('bamboo') === 0;
-  const minNeed = Math.min(...Object.values(CHALLENGE.wingNeedPaper));
-  return { paper, torn, bodies, hasString, crackedOnly, empties, traps, canAsk: !stage || !!stage.hintVillager, canBuild: paper >= minNeed && bodies.length > 0 };
+// 가방 내용(['wing', 'frame', ...])을 조립 부품 개수로 바꾼다. 조종석은 늘 하나 준다
+function partsFromBag(bag, empties = 0, level = null) {
+  const counts = {};
+  for (const t of bag) if (t && ITEMS[t].part) counts[ITEMS[t].part] = (counts[ITEMS[t].part] || 0) + 1;
+  const traps = bag.filter(t => t && ITEMS[t].use === 'trap');
+  return { counts, empties, traps, canAsk: !level || !!level.hintVillager, canBuild: !!(counts.wing || counts.rotor || counts.bellows) };
 }
 
-function wingUnlocked(parts, wingKey) { return parts.paper >= CHALLENGE.wingNeedPaper[wingKey]; }
-function usesCracked(parts, pick) { return parts.crackedOnly && pick.body === 'bamboo'; }
-
-// 들어 올리는 힘 배율: 끈 없음과 금 간 대나무가 겹치면 함께 곱한다
-function liftScaleOf(parts, pick) {
-  return (parts.hasString ? 1 : STATE_EFFECT.noStringLift) * (usesCracked(parts, pick) ? STATE_EFFECT.crackedBambooLift : 1);
+// 아요 추천 후보(가진 부품에 맞게 줄여서 가장 멀리 가는 것을 고른다)
+const BUILD_TEMPLATES = [
+  ['WWWWW', 'TFCBH', 'WWRWW'], ['.WWW.', 'TFCF.', '.WWW.'], ['.WWW.', 'TFCB.', '.WWW.'], ['.WW..', 'BFCB.', '.WW..'],
+  ['.WWW.', 'BFCB.', '.WW..'], ['.B...', 'BBCW.', '..W..'], ['.WW..', 'TFCW.', '..WW.'], ['.WW..', '.FCW.', '..WW.'],
+  ['..W..', '.FCW.', '..W..'], ['.WWW.', '.FCF.', '.....'], ['..W..', '.FC..', '..W..'], ['..W..', '..C..', '..W..'],
+  ['..WW.', 'TFCW.', '.....'], ['.RRR.', '.FCF.', '.....'], ['.RR..', 'WFCW.', '.WW..'], ['.RWW.', 'TFCFB', '.HWW.'],
+  ['..W..', 'TFCB.', '..W..'], ['..W..', '.TCW.', '.....'], ['.....', 'BFCB.', '..W..'], ['..R..', '.FCW.', '.....'],
+];
+function bestBuildFor(rules, opt) {
+  const score = g => { const r = simulateCraft(g, opt); return r.crashed ? r.distance * 0.5 : r.distance; };
+  let best = null, bestD = -1;
+  for (const t of BUILD_TEMPLATES) {
+    const g = fitGrid(gridFromRows(t), rules);
+    if (!analyzeCraft(g).valid) continue;
+    const d = score(g);
+    if (d > bestD) { bestD = d; best = g; }
+  }
+  if (!best) return freshGrid(rules);
+  // 남은 부품을 하나씩 붙이거나 떼어 보고, 가장 멀리 가게 하는 것을 고른다(더 나아지지 않으면 멈춤)
+  for (let round = 0; round < 8; round++) {
+    let gain = null;
+    for (let r = 0; r < GRID.rows; r++) for (let c = 0; c < GRID.cols; c++) {
+      if (!best[r][c] || best[r][c] === 'cockpit') continue;
+      const g = copyGrid(best);
+      g[r][c] = null;
+      if (!analyzeCraft(g).valid) continue;
+      const d = score(g);
+      if (d > bestD + 0.5 && (!gain || d > gain.d)) gain = { g, d };
+    }
+    for (const key of rules.allowed) {
+      if (key === 'cockpit' || limitOf(rules, key) - usedOf(best, rules, key) <= 0) continue;
+      for (let r = 0; r < GRID.rows; r++) for (let c = 0; c < GRID.cols; c++) {
+        if (best[r][c]) continue;
+        const near = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dr, dc]) => best[r + dr] && best[r + dr][c + dc]);
+        if (!near) continue;
+        const g = copyGrid(best);
+        g[r][c] = key;
+        const d = score(g);
+        if (d > bestD + 0.5 && (!gain || d > gain.d)) gain = { g, d };
+      }
+    }
+    if (!gain) break;
+    best = gain.g; bestD = gain.d;
+  }
+  return best;
 }
+// 모은 부품으로 조립 규칙을 만든다(조종석 1 + 모은 부품만)
+function rulesFromParts(parts, level) {
+  const limits = { cockpit: 1, ...parts.counts };
+  const rules = { allowed: PART_ORDER.filter(k => limits[k]), limits, locked: [], recommend: null };
+  rules.recommend = gridToRows(bestBuildFor(rules, challengeLaunch(level)));
+  return rules;
+}
+// 도전 모드 발사: 1단계는 자동, 그 외는 '수평으로 끝까지 당김'으로 본다
+function challengeLaunch(level) { return level && level.launch === 'pull' ? { angle: CONTROL.optAngle, power: 1 } : {}; }
 
 // 무거운 물건 하나당 느려지고, 최소 속도 아래로는 내려가지 않는다
 function speedScaleOf(bag) {
@@ -828,18 +728,14 @@ function speedScaleOf(bag) {
   return Math.max(CHALLENGE.minSpeedScale, 1 - CHALLENGE.heavySlowEach * heavy);
 }
 
-function isChallengeSuccess(flight, stage) { return !flight.crashed && flight.distance >= stage.goal; }
+function isChallengeSuccess(flight, level) { return !flight.crashed && flight.distance >= level.goal; }
 
-// 도전 모드 피드백: 위에서 먼저 맞는 것 하나. 해당 없으면 null(기존 FEEDBACK만 사용)
-function challengeFeedbackKey(parts, pick) {
-  if (pick.body === 'iron' && !parts.bodies.includes('bamboo')) return 'ironNoBamboo';
-  if (usesCracked(parts, pick)) return 'crackedBamboo';
-  if (parts.torn > 0) return 'tornPaper';
-  if (parts.traps && parts.traps.includes('jar')) return 'jarHeld';
-  if (parts.traps && parts.traps.includes('pot')) return 'potHeld';
+// 도전 모드 실패 시 한 마디: 위에서 먼저 맞는 것 하나. 해당 없으면 null(FEEDBACK만 사용)
+function challengeFeedbackKey(parts) {
+  if (parts.traps.includes('jar')) return 'jarHeld';
+  if (parts.traps.includes('pot')) return 'potHeld';
   if (parts.canAsk && parts.empties >= CHALLENGE.manyEmptyAt) return 'manyEmpty';
-  if (parts.paper < CHALLENGE.wingNeedPaper.big) return 'littlePaper';
-  if (!parts.hasString) return 'noString';
+  if ((parts.counts.wing || 0) < CHALLENGE.goodWings) return 'littleWing';
   return null;
 }
 
@@ -872,113 +768,87 @@ function aimFromPull(dx, dy) {
   return { cancel: false, angle: clamp(K.optAngle + tilt * K.pullAngleScale, K.minAngle, K.maxAngle), power, pull };
 }
 
-// 단계에서의 비행. drums를 주면 그때 두드린 것으로 계산. 1단계는 자동 발사, 그 외는 최적 발사로 본다
-function stageFlight(stage, parts, pick, drums) {
-  const ctl = { thermal: true, drums: drums || [] };
-  if (stage.launch === 'pull') { ctl.angle = CONTROL.optAngle; ctl.power = 1; }
-  return simulateFlight(pick.wing, pick.body, pick.ballast, liftScaleOf(parts, pick), ctl);
-}
-
-// 대표 가방 조합 검사 — 브라우저 콘솔에서 runChallengeCombos() 실행
+// 도전 모드 검사 — 브라우저 콘솔에서 runChallengeCombos() 실행
+// 대표 가방(아요 추천 조립으로 날림), 내용물 수, 1단계 보장, 힌트, 60초 안에 모을 수 있는지, 이벤트, 문장 길이
 function runChallengeCombos() {
-  const B = 'bamboo', Cr = 'crackedBamboo', P = 'paper', Tp = 'tornPaper', Wd = 'wood', I = 'iron', S = 'string', J = 'jar', Pt = 'pot';
-  const DR = [1, 2, 3]; // 두드린 시간(초)
-  // must: 'ok' 성공 / 'fail' 실패 / 'cannot' 만들 수 없음, fb: 기대 피드백, drums: 두드리기
+  const W = 'wing', F = 'frame', K = 'weight', R = 'rotor', B = 'bellows', T = 'tail', J = 'jar', P = 'pot';
+  // must: 'ok' 성공 / 'fail' 실패 / 'cannot' 만들 수 없음, fb: 기대하는 도전 모드 한 마디
   const cases = {
     1: [
-      { bag: [B, P, P],          wing: 'normal', body: 'bamboo', ballast: 'center', must: 'ok' }, // 대나무 + 한지 2장
-      { bag: [B, P, P, P],       wing: 'big',    body: 'bamboo', ballast: 'center', must: 'ok' },
-      { bag: [B, P, P, P],       wing: 'normal', body: 'bamboo', ballast: 'center', must: 'ok' },
-      { bag: [B, P, P, Wd],      wing: 'normal', body: 'bamboo', ballast: 'center', must: 'ok' },
-      { bag: [B, P],             wing: 'small',  body: 'bamboo', ballast: 'center', must: 'fail', fb: 'littlePaper' },
-      { bag: [Wd, P, P],         wing: 'normal', body: 'wood',   ballast: 'center', must: 'fail', fb: 'littlePaper' },
-      { bag: [Wd, P, P],         wing: 'normal', body: 'wood',   ballast: 'center', must: 'fail', empties: 2, fb: 'littlePaper' }, // 마을 사람이 없으니 물어보라고 하지 않음
-      { bag: [B, P, P],          wing: 'normal', body: 'bamboo', ballast: 'front',  must: 'fail' },
-      { bag: [B, P, P],          wing: 'normal', body: 'bamboo', ballast: 'back',   must: 'fail' },
-      { bag: [P, P, P],          must: 'cannot' },
+      { bag: [W, W], must: 'ok' }, // 최소한 날 수 있는 조합
+      { bag: [W, W, W, W, F, T], must: 'ok' },
+      { bag: [W], must: 'fail', fb: 'littleWing' },
+      { bag: [F, T], must: 'cannot' },
     ],
     2: [
-      { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'center', must: 'ok' },
-      { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'center', must: 'ok' },
-      { bag: [B, P, P, Tp, S],   wing: 'normal', body: 'bamboo', ballast: 'center', must: 'ok', locked: 'big' },
-      { bag: [B, P, Tp, S],      wing: 'small',  body: 'bamboo', ballast: 'center', must: 'fail', locked: 'normal', fb: 'tornPaper' },
-      { bag: [Cr, P, P, S],      wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', fb: 'crackedBamboo' },
-      { bag: [Cr, P, P, P],      wing: 'big',    body: 'bamboo', ballast: 'center', must: 'fail', fb: 'crackedBamboo' },
-      { bag: [Wd, P, P, P, S],   wing: 'big',    body: 'wood',   ballast: 'center', must: 'fail', fb: null },
-      { bag: [Wd, P, P, P],      wing: 'big',    body: 'wood',   ballast: 'center', must: 'fail', fb: 'noString' },
-      { bag: [B, Tp, S],         must: 'cannot' },
+      { bag: [W, W, W, F, T], must: 'ok' },
+      { bag: [W, W, W, R, F, T], must: 'ok' },
+      { bag: [W, W], must: 'fail', fb: 'littleWing' },
+      { bag: [W, W], empties: 2, must: 'fail', fb: 'manyEmpty' },
+      { bag: [R, F, K], must: 'fail' },
+      { bag: [K, F], must: 'cannot' },
     ],
     3: [
-      { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'center', must: 'ok' },
-      { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', fb: 'littlePaper' },
-      { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'center', must: 'ok', drums: DR },
-      { bag: [Cr, P, P, P, S],   wing: 'big',    body: 'bamboo', ballast: 'center', must: 'fail', fb: 'crackedBamboo' },
-      { bag: [Cr, P, P, P, S],   wing: 'big',    body: 'bamboo', ballast: 'center', must: 'ok', drums: DR },
-      { bag: [B, P, P, P],       wing: 'big',    body: 'bamboo', ballast: 'center', must: 'fail', fb: 'noString' },
-      { bag: [B, P, P, J, S],    wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', fb: 'jarHeld' },
-      { bag: [B, P, P, Pt, S],   wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', fb: 'potHeld' },
-      { bag: [B, P, P, S],       wing: 'normal', body: 'bamboo', ballast: 'center', must: 'fail', empties: 2, fb: 'manyEmpty' },
-      { bag: [I, P, P, P, S],    wing: 'big',    body: 'iron',   ballast: 'center', must: 'fail', fb: 'ironNoBamboo' },
-      { bag: [I, P, P, P, S],    wing: 'big',    body: 'iron',   ballast: 'center', must: 'fail', fb: 'ironNoBamboo', drums: DR },
-      { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'back',   must: 'fail', drums: DR },
-      { bag: [B, P, P, P, S],    wing: 'big',    body: 'bamboo', ballast: 'front',  must: 'fail', drums: DR },
-      { bag: [J, Pt, B],         must: 'cannot' },
+      { bag: [W, W, W, W, B, T, F], must: 'ok' },
+      { bag: [W, W, W, B, B, T], must: 'ok' },
+      { bag: [W, W, W, F, T], must: 'fail' },
+      { bag: [W, W, W, J, T, F], must: 'fail', fb: 'jarHeld' },
+      { bag: [W, W, W, P, T, F], must: 'fail', fb: 'potHeld' },
+      { bag: [J, P, F], must: 'cannot' },
     ],
   };
+  // 위치를 다 알 때 60초 안에 모아야 하는 가방
+  const targetBag = { 1: [W, W], 2: [W, W, W, T], 3: [W, W, W, B, T] };
   const label = bag => {
     const n = {};
     bag.forEach(t => { n[ITEMS[t].short] = (n[ITEMS[t].short] || 0) + 1; });
-    return Object.keys(n).map(k => n[k] > 1 ? `${k}${n[k]}` : k).join('+') || '(빈 가방)';
+    return Object.keys(n).map(k => (n[k] > 1 ? `${k}${n[k]}` : k)).join('+') || '(빈 가방)';
+  };
+  const flyBag = (level, bag, empties) => {
+    const parts = partsFromBag(bag, empties || 0, level);
+    if (!parts.canBuild) return { parts };
+    const rules = rulesFromParts(parts, level), g = fitGrid(gridFromRows(rules.recommend), rules);
+    const fl = simulateCraft(g, challengeLaunch(level));
+    return { parts, rules, fl, ok: isChallengeSuccess(fl, level) };
   };
   const rows = [], problems = [], stageTimes = [], hintSamples = [], eventRows = [];
   const decisionSeconds = 1.5; // 부품 팝업에서 고르는 시간(가정)
   const searchSeconds = SEARCH_TAPS / SEARCH_TAPS_PER_SECOND;
 
-  for (const stage of CHALLENGE_LEVELS) {
-    const tag = stage.name;
-    for (const c of cases[stage.id]) {
+  for (const level of CHALLENGE_LEVELS) {
+    const tag = level.name, loot = LOOT_TABLE[level.id] || [];
+    for (const c of [...cases[level.id], { bag: targetBag[level.id], must: 'ok' }]) {
       const name = label(c.bag);
       if (c.bag.length > BAG_SIZE) problems.push(`${tag} ${name}: 가방 칸 초과`);
-      const parts = partsFromBag(c.bag, c.empties || 0, stage);
+      const r = flyBag(level, c.bag, c.empties);
       if (c.must === 'cannot') {
-        rows.push({ 단계: tag, 가방: name, 조립: '-', 두드리기: 0, '거리(m)': '-', 결과: '만들 수 없음', 피드백: '부품이 모자람' });
-        if (parts.canBuild) problems.push(`${tag} ${name}: 만들 수 없어야 함`);
+        rows.push({ 단계: tag, 가방: name, '추천 조립': '-', '거리(m)': '-', 결과: '만들 수 없음', 피드백: '-' });
+        if (r.parts.canBuild) problems.push(`${tag} ${name}: 만들 수 없어야 함`);
         continue;
       }
-      if (!parts.canBuild) { problems.push(`${tag} ${name}: 만들 수 있어야 함`); continue; }
-      if (!wingUnlocked(parts, c.wing)) problems.push(`${tag} ${name}: ${c.wing} 날개가 잠겨 있음`);
-      if (c.locked && wingUnlocked(parts, c.locked)) problems.push(`${tag} ${name}: ${c.locked} 날개는 잠겨 있어야 함`);
-      if (!parts.bodies.includes(c.body)) problems.push(`${tag} ${name}: ${c.body} 몸통 재료가 없음`);
-      const pick = { wing: c.wing, body: c.body, ballast: c.ballast };
-      const fl = stageFlight(stage, parts, pick, c.drums);
-      const ok = isChallengeSuccess(fl, stage);
-      const extra = ok ? null : challengeFeedbackKey(parts, pick);
+      if (!r.fl) { problems.push(`${tag} ${name}: 만들 수 있어야 함`); continue; }
+      const extra = r.ok ? null : challengeFeedbackKey(r.parts);
       rows.push({
-        단계: tag, 가방: name + (c.empties ? ` (빈 곳 ${c.empties})` : ''),
-        조립: `${CONFIG.wings[c.wing].short}/${CONFIG.bodies[c.body].short}/${CONFIG.ballasts[c.ballast].short}`,
-        두드리기: c.drums ? c.drums.length : 0,
-        '힘 배율': +liftScaleOf(parts, pick).toFixed(2), '거리(m)': fl.distance,
-        결과: ok ? '성공' : `실패(${GRADE_TEXT[fl.grade]})`,
-        피드백: ok ? 'success' : `${fl.feedback}${extra ? ' + ' + extra : ''}`,
+        단계: tag, 가방: name + (c.empties ? ` (빈 곳 ${c.empties})` : ''), '추천 조립': r.rules.recommend.join('/'),
+        '거리(m)': r.fl.distance, 결과: r.ok ? '성공' : `실패(${GRADE_TEXT[r.fl.grade]})`, 피드백: r.ok ? 'success' : `${r.fl.feedback}${extra ? ' + ' + extra : ''}`,
       });
-      if (c.must === 'ok' && !ok) problems.push(`${tag} ${name}: 반드시 성공해야 함(${fl.distance}m)`);
-      if (c.must === 'fail' && ok) problems.push(`${tag} ${name}: 실패해야 함(${fl.distance}m)`);
-      if ('fb' in c && !ok && extra !== c.fb) problems.push(`${tag} ${name}: 피드백이 ${c.fb}여야 하는데 ${extra}`);
-      if ((c.body === 'iron' || c.ballast === 'back') && !fl.crashed) problems.push(`${tag} ${name}: 추락해야 함`);
+      if (c.must === 'ok' && !r.ok) problems.push(`${tag} ${name}: 반드시 성공해야 함(${r.fl.distance}m)`);
+      if (c.must === 'fail' && r.ok) problems.push(`${tag} ${name}: 실패해야 함(${r.fl.distance}m)`);
+      if ('fb' in c && !r.ok && extra !== c.fb) problems.push(`${tag} ${name}: 한 마디가 ${c.fb}여야 하는데 ${extra}`);
     }
 
     // 내용물 구성
-    const total = stage.loot.reduce((n, r) => n + r.count, 0);
-    if (total !== stage.spots.length) problems.push(`${tag}: 내용물 ${total}개, 장소 ${stage.spots.length}곳`);
-    if (!stage.states && stage.loot.some(r => ITEMS[r.item] && (ITEMS[r.item].torn || ITEMS[r.item].cracked))) problems.push(`${tag}: 부품 상태가 없어야 함`);
-    const spots0 = stageSpots(stage);
+    const total = loot.reduce((n, x) => n + x.count, 0);
+    if (total !== level.spots.length) problems.push(`${tag}: 내용물 ${total}개, 장소 ${level.spots.length}곳`);
+    if (loot.some(x => x.item !== 'empty' && !ITEMS[x.item])) problems.push(`${tag}: 없는 부품이 들어 있음`);
+    const spots0 = stageSpots(level);
     if (spots0.some(s => !s)) problems.push(`${tag}: 없는 장소 id`);
 
     // 힌트는 항상 실제 배치와 일치
-    if (stage.hintVillager) {
+    if (level.hintVillager) {
       for (let seed = 1; seed <= 100; seed++) {
-        const rng = createRng(seed + 1000), loot = shuffleLoot(seed, stage);
-        const spots = spots0.map((s, i) => ({ ...s, loot: loot[i], opened: false, hint: null }));
+        const rng = createRng(seed + 1000), lay = shuffleLoot(seed, level);
+        const spots = spots0.map((s, i) => ({ ...s, loot: lay[i], opened: false, hint: null }));
         const h = makeHint(spots, rng);
         const spot = spots.find(s => s.id === h.spotId);
         if (!spot || spot.loot !== h.item) problems.push(`${tag} 시드 ${seed}: 거짓 힌트 "${h.text}"`);
@@ -987,46 +857,50 @@ function runChallengeCombos() {
       }
     }
 
-    // 시간: 위치를 다 알 때 최적 가방이 60초 안에 되는가, 전부 뒤지면 얼마나 걸리는가
+    // 시간: 위치를 다 알 때 목표 가방을 60초 안에 모을 수 있는가, 전부 뒤지면 얼마나 걸리는가
     const stands = [CHALLENGE.start, ...spots0.map(s => ({ x: s.sx, y: s.sy }))];
     stands.forEach((p, i) => { if (isBlocked(p.x, p.y)) problems.push(`${tag} ${i}번 서는 자리가 막혀 있음`); });
     const dist = stands.map(p => stands.map(q => pathLength(p, q)));
     const allStops = spots0.map((_, i) => i + 1);
-    const popups = stage.loot.filter(r => r.item !== 'empty' && r.item !== 'record').reduce((n, r) => n + r.count, 0);
+    const popups = loot.filter(x => x.item !== 'empty' && x.item !== 'record').reduce((n, x) => n + x.count, 0);
     const walkAll = shortestTour(dist, allStops) / CHALLENGE.walkSpeed;
-    const allSeconds = walkAll + stage.spots.length * searchSeconds + popups * decisionSeconds;
+    const allSeconds = walkAll + level.spots.length * searchSeconds + popups * decisionSeconds;
+    const need = {};
+    targetBag[level.id].forEach(t => { need[t] = (need[t] || 0) + 1; });
     let worst = 0, sum = 0;
-    const seedsChecked = 300;
+    const seedsChecked = 200;
     for (let seed = 1; seed <= seedsChecked; seed++) {
-      const loot = shuffleLoot(seed, stage);
-      const at = t => allStops.filter(i => loot[i - 1] === t);
-      const papers = at('paper'), need = CHALLENGE.wingNeedPaper.big;
-      let sec = Infinity;
-      for (let mask = 0; mask < 1 << papers.length; mask++) { // 한지가 더 많으면 가까운 것만 고른다
-        const pick = papers.filter((_, i) => mask & (1 << i));
-        if (pick.length !== need) continue;
-        const stops = [...at('bamboo'), ...at('string'), ...pick];
-        sec = Math.min(sec, shortestTour(dist, stops) / CHALLENGE.walkSpeed + stops.length * (searchSeconds + decisionSeconds));
+      const lay = shuffleLoot(seed, level);
+      // 종류마다 필요한 개수만큼 장소를 고르는 모든 경우 중 가장 빠른 것
+      let choices = [[]];
+      for (const [t, n] of Object.entries(need)) {
+        const at = allStops.filter(i => lay[i - 1] === t), next = [];
+        for (let mask = 0; mask < 1 << at.length; mask++) {
+          const pick = at.filter((_, i) => mask & (1 << i));
+          if (pick.length === n) choices.forEach(ch => next.push([...ch, ...pick]));
+        }
+        choices = next;
       }
+      let sec = Infinity;
+      for (const stops of choices) sec = Math.min(sec, shortestTour(dist, stops) / CHALLENGE.walkSpeed + stops.length * (searchSeconds + decisionSeconds));
       worst = Math.max(worst, sec); sum += sec;
     }
-    if (worst > TIME_LIMIT) problems.push(`${tag}: 최적 가방이 ${worst.toFixed(1)}초 걸리는 배치가 있음`);
-    stageTimes.push({ 단계: tag, 장소: stage.spots.length, '걷기 최단(초)': +walkAll.toFixed(1), '전부 뒤지기(초)': +allSeconds.toFixed(1), '최적 가방 평균(초)': +(sum / seedsChecked).toFixed(1), '최적 가방 최악(초)': +worst.toFixed(1) });
+    if (worst > TIME_LIMIT) problems.push(`${tag}: 목표 가방을 모으는 데 ${worst.toFixed(1)}초 걸리는 배치가 있음`);
+    stageTimes.push({ 단계: tag, 장소: level.spots.length, '목표 가방': label(targetBag[level.id]), '걷기 최단(초)': +walkAll.toFixed(1), '전부 뒤지기(초)': +allSeconds.toFixed(1), '목표 가방 평균(초)': +(sum / seedsChecked).toFixed(1), '목표 가방 최악(초)': +worst.toFixed(1) });
   }
 
   // 3단계 전부 뒤지기는 시간 안에 다 못 하게(80~90초)
   const last = stageTimes[stageTimes.length - 1]['전부 뒤지기(초)'];
   if (last < 80 || last > 90) problems.push(`3단계 전부 뒤지기 ${last}초(목표 80~90초)`);
 
-  // 1단계: 대나무 + 한지 2장 이상이면 성공할 수 있어야 함
-  {
-    const st = CHALLENGE_LEVELS[0];
-    for (const n of [2, 3]) {
-      const parts = partsFromBag(['bamboo', ...Array(n).fill('paper')], 0, st);
-      const pick = { wing: n >= 3 ? 'big' : 'normal', body: 'bamboo', ballast: 'center' };
-      if (!isChallengeSuccess(stageFlight(st, parts, pick), st)) problems.push(`1단계 대나무 + 한지 ${n}장이 실패`);
-    }
-  }
+  // 1단계 보장: 날 수 있는 만큼 한지 날개가 늘 들어 있음
+  const wings1 = (LOOT_TABLE[1].find(x => x.item === 'wing') || { count: 0 }).count;
+  if (wings1 < CHALLENGE.level1MinWings) problems.push(`1단계 한지 날개 ${wings1}장(최소 ${CHALLENGE.level1MinWings}장)`);
+  if (!flyBag(CHALLENGE_LEVELS[0], Array(CHALLENGE.level1MinWings).fill('wing')).ok) problems.push('1단계 최소 날개로 성공 못 함');
+
+  // 교환·이벤트 보상이 실제 부품
+  for (const tr of TRADES) if (!ITEMS[tr.give] || !ITEMS[tr.give].part || !ITEMS[tr.want]) problems.push(`교환 ${tr.who}: 부품이 아님`);
+  for (const e of [EVENTS.paper, EVENTS.chicken]) if (!ITEMS[e.reward] || !ITEMS[e.reward].part) problems.push(`이벤트 보상 ${e.reward}: 부품이 아님`);
 
   // 시드 3개: 이벤트 목록과 3단계 배치
   const stage3 = CHALLENGE_LEVELS[2], seedList = [1, 2, 3], layouts = seedList.map(s => shuffleLoot(s, stage3));
@@ -1051,12 +925,12 @@ function runChallengeCombos() {
     return row;
   });
 
-  // 진행 중 문장은 20자 이내(이야기·기록 카드·요청 문구 제외)
+  // 진행 중 문장은 20자 이내(이야기·기록 카드·부품 소개·요청 문구 제외)
   const shortOnes = [
     CHALLENGE_STORY.quitAsk, CHALLENGE_STORY.timeUp, CHALLENGE_STORY.noParts, CHALLENGE_STORY.bagFull, CHALLENGE_STORY.emptyLoot,
-    CHALLENGE_STORY.buildHello, CHALLENGE_STORY.noString, CHALLENGE_STORY.crackedNote, CHALLENGE_STORY.tornNote,
     EVENTS.paper.startText, EVENTS.paper.missText, EVENTS.chicken.startText, TRADE_THANKS, ...TRADES.map(x => x.ask),
-    HINT_TEMPLATES.none, TEXT.buildHello, TEXT.buildRetry, CONTROL_TEXT.pullHint,
+    HINT_TEMPLATES.none, CONTROL_TEXT.pullHint, FLIGHT_TEXT.bellowsHint, FLIGHT_TEXT.rotorHint,
+    BUILD_TEXT.needCockpit, BUILD_TEXT.noLift, BUILD_TEXT.tailHeavy, BUILD_TEXT.noseHeavy, BUILD_TEXT.ready, BUILD_TEXT.usedUp,
     ...Object.entries(TUTORIALS.items).filter(([k]) => k !== 'drum').map(([, v]) => v),
   ];
   for (const s of shortOnes) if (s.length > 20) problems.push(`20자 초과: ${s}`);
@@ -1072,92 +946,51 @@ function runChallengeCombos() {
 }
 
 // 조종 검사 — 브라우저 콘솔에서 runControlTest() 실행
+// 당기는 방향과 각도, 발사 각도·세기, 풀무 누르기, 회전날개 두드리기가 결과를 바꾸는지 확인
 function runControlTest() {
-  const designs = [
-    { 설계: '최적', wing: 'big', body: 'bamboo', ballast: 'center' },
-    { 설계: '보통', wing: 'normal', body: 'wood', ballast: 'center' },
-    { 설계: '쇠 몸통', wing: 'big', body: 'iron', ballast: 'center' },
-  ];
-  const rows = [], problems = [], DR = [1, 2, 3];
-  for (const d of designs) {
-    const auto = simulateFlight(d.wing, d.body, d.ballast);
-    for (const angle of [15, 30, 50]) for (const drums of [[], DR]) {
-      const fl = simulateFlight(d.wing, d.body, d.ballast, 1, { angle, power: 1, thermal: true, drums });
-      rows.push({
-        설계: d.설계, 각도: angle, 두드리기: drums.length, '거리(m)': fl.distance, 결과: fl.crashed ? '추락' : GRADE_TEXT[fl.grade],
-        '자동 비행 대비(%)': fl.crashed ? '-' : Math.round((fl.distance / auto.distance - 1) * 100),
-      });
-      if (d.body === 'iron' && !fl.crashed) problems.push(`쇠 몸통 ${angle}도 ${drums.length}번: 추락해야 함`);
-      if (fl.crashed && !fl.inRiver) problems.push(`${d.설계} ${angle}도: 추락인데 강 밖`);
-      if (fl.distance > CONFIG.world.rulerMax) problems.push(`${d.설계} ${angle}도 ${drums.length}번: ${fl.distance}m(눈금 초과)`);
-    }
-  }
-  // 실제 당기기 경우: 수평 끝까지, 수평 절반, 왼쪽 위, 왼쪽 아래 45도
-  const M = CONTROL.maxPull;
-  const pulls = [
-    ['수평으로 끝까지', -M, 0], ['수평으로 절반', -M / 2, 0],
-    ['왼쪽 위로 끝까지', -M * Math.cos(Math.PI / 6), -M * Math.sin(Math.PI / 6)],
-    ['왼쪽 아래 45도 끝까지', -M * Math.SQRT1_2, M * Math.SQRT1_2],
-  ];
-  const pullRows = [];
-  for (const d of designs) {
-    const noCtl = simulateFlight(d.wing, d.body, d.ballast);
-    for (const [name, dx, dy] of pulls) {
-      const a = aimFromPull(dx, dy);
-      const fl = simulateFlight(d.wing, d.body, d.ballast, 1, { angle: a.angle, power: a.power, thermal: true, drums: [] });
-      pullRows.push({ 설계: d.설계, 당기기: name, 각도: Math.round(a.angle), 세기: +a.power.toFixed(2), '거리(m)': fl.distance, '자동 비행(m)': noCtl.distance, 결과: fl.crashed ? '추락' : GRADE_TEXT[fl.grade] });
-      if (d.body === 'iron' && !fl.crashed) problems.push(`쇠 몸통 ${name}: 추락해야 함`);
-    }
-  }
-  {
-    const full = aimFromPull(-M, 0), half = aimFromPull(-M / 2, 0), up = aimFromPull(-100, -50), down = aimFromPull(-M, M);
-    if (full.angle !== CONTROL.optAngle || full.power !== 1) problems.push('수평 끝까지가 최적 각도·최대 세기가 아님');
-    if (Math.abs(down.angle - 57) > 0.1) problems.push(`왼쪽 아래 45도가 ${down.angle.toFixed(1)}도(약 57도여야 함)`);
-    if (up.angle >= CONTROL.optAngle) problems.push('왼쪽 위로 당기면 각도가 낮아져야 함');
-    if (half.angle !== CONTROL.optAngle || !(half.power < 1)) problems.push('수평 절반은 각도가 같고 세기만 약해야 함');
-    if (!aimFromPull(50, 0).cancel || !aimFromPull(50, 40).cancel) problems.push('오른쪽으로 밀면 취소되어야 함');
-    if (aimFromPull(-M, -M * 5).angle !== CONTROL.minAngle || aimFromPull(-1, M).angle !== CONTROL.maxAngle) problems.push('각도가 10~60도로 제한되지 않음');
-    const best = simulateFlight('big', 'bamboo', 'center', 1, { angle: full.angle, power: full.power, thermal: true }).distance;
-    if (best < simulateFlight('big', 'bamboo', 'center').distance) problems.push('최적 설계 + 수평 끝까지가 자동 비행보다 짧음');
-  }
-  const dist = (w, b, bl, ctl) => simulateFlight(w, b, bl, 1, ctl).distance;
-  const auto = dist('big', 'bamboo', 'center');
-  const best = dist('big', 'bamboo', 'center', { angle: CONTROL.optAngle, power: 1, thermal: true, drums: DR });
-  const gain = best / auto - 1;
-  if (gain < 0.1 || gain > 0.2) problems.push(`최적 조종이 자동보다 ${(gain * 100).toFixed(1)}%(목표 10~20%)`);
-  // 같은 각도·세기는 자동과 같은 결과
-  if (dist('big', 'bamboo', 'center', { angle: CONTROL.optAngle, power: 1 }) !== auto) problems.push('최적 발사가 자동 발사와 다름');
-  // 약 30도가 가장 멀리
-  for (const [w, b] of [['big', 'bamboo'], ['normal', 'wood'], ['small', 'bamboo']]) {
+  const problems = [], rows = [], M = CONTROL.maxPull;
+  // 당기기: 왼쪽 수평 = 기준 각도, 아래로 = 높게, 위로 = 낮게, 오른쪽 = 취소
+  const full = aimFromPull(-M, 0), half = aimFromPull(-M / 2, 0), up = aimFromPull(-100, -50), down = aimFromPull(-M, M);
+  if (full.angle !== CONTROL.optAngle || full.power !== 1) problems.push('수평 끝까지가 기준 각도·최대 세기가 아님');
+  if (!(down.angle > CONTROL.optAngle)) problems.push('왼쪽 아래로 당기면 각도가 높아져야 함');
+  if (!(up.angle < CONTROL.optAngle)) problems.push('왼쪽 위로 당기면 각도가 낮아져야 함');
+  if (half.angle !== CONTROL.optAngle || !(half.power < 1)) problems.push('수평 절반은 각도가 같고 세기만 약해야 함');
+  if (!aimFromPull(50, 0).cancel || !aimFromPull(50, 40).cancel) problems.push('오른쪽으로 밀면 취소되어야 함');
+  if (aimFromPull(-M, -M * 5).angle !== CONTROL.minAngle || aimFromPull(-1, M).angle !== CONTROL.maxAngle) problems.push('각도가 최소~최대로 제한되지 않음');
+
+  const crafts = { 날개형: TEST_CRAFTS['날개 6장+꼬리'], 풀무형: TEST_CRAFTS['풀무 2개'], 회전날개형: TEST_CRAFTS['회전날개 3개'], '날개 2장': TEST_CRAFTS['날개 2장'] };
+  for (const [name, rowsG] of Object.entries(crafts)) {
+    const g = gridFromRows(rowsG), row = { 조립: name };
     let bestA = 0, bestD = -1;
-    for (let a = CONTROL.minAngle; a <= CONTROL.maxAngle; a++) {
-      const v = dist(w, b, 'center', { angle: a, power: 1 });
-      if (v > bestD) { bestD = v; bestA = a; }
+    for (let a = CONTROL.minAngle; a <= CONTROL.maxAngle; a += 10) {
+      const d = simulateCraft(g, { angle: a, power: 1 }).distance;
+      row[`${a}°`] = d;
+      if (d > bestD) { bestD = d; bestA = a; }
     }
-    if (Math.abs(bestA - CONTROL.optAngle) > 6) problems.push(`${w}/${b}: 가장 멀리 가는 각도가 ${bestA}도`);
-    if (dist(w, b, 'center', { angle: 30, power: 0.7 }) >= dist(w, b, 'center', { angle: 30, power: 1 })) problems.push(`${w}/${b}: 세게 쏘는 게 더 멀리 가야 함`);
+    row['약하게(30°)'] = simulateCraft(g, { angle: 30, power: CONTROL.minPower }).distance;
+    row['가장 먼 각도'] = bestA;
+    rows.push(row);
+    if (row['약하게(30°)'] > simulateCraft(g, { angle: 30, power: 1 }).distance) problems.push(`${name}: 약하게 쏜 게 더 멀리 감`);
+    const a = simulateCraft(g, { angle: 30, power: 1 }), b = simulateCraft(g, { angle: 30, power: 1 });
+    if (a.distance !== b.distance || a.samples.length !== b.samples.length) problems.push(`${name}: 같은 조작인데 결과가 다름`);
   }
-  // 쇠 몸통·뒤 무게추: 어떤 조종이어도 추락하고 거리도 강 안
-  for (const w of Object.keys(CONFIG.wings)) for (const b of Object.keys(CONFIG.bodies)) for (const bl of Object.keys(CONFIG.ballasts)) {
-    if (b !== 'iron' && bl !== 'back') continue;
-    for (const angle of [10, 30, 60]) for (const power of [CONTROL.minPower, 1]) for (const drums of [[], DR]) {
-      const fl = simulateFlight(w, b, bl, 1, { angle, power, thermal: true, drums });
-      if (!fl.crashed || !fl.inRiver) problems.push(`${w}/${b}/${bl} ${angle}도: 강에 추락해야 함(${fl.distance}m)`);
-    }
-  }
-  // 앞 무게추는 조종해도 3단계 목표에 못 감, 작은 날개도 마찬가지
-  if (dist('big', 'bamboo', 'front', { angle: 30, power: 1, thermal: true, drums: DR }) >= CHALLENGE_LEVELS[2].goal) problems.push('앞 무게추가 3단계 목표에 도달');
-  if (dist('small', 'bamboo', 'center', { angle: 30, power: 1, thermal: true, drums: DR }) >= CHALLENGE_LEVELS[1].goal) problems.push('작은 날개가 2단계 목표에 도달');
-  // 조종 비중: 같은 설계에서 최고-최저 폭과 설계 간 폭 비교
-  const worstCtl = dist('big', 'bamboo', 'center', { angle: 50, power: CONTROL.minPower });
-  const designRange = auto - simulateFlight('small', 'wood', 'center').distance;
-  const summary = { '자동(m)': auto, '최적 조종(m)': best, '자동 대비(%)': +(gain * 100).toFixed(1), '가장 못 쏜 경우(m)': worstCtl, '설계 차이(m, 큰+대나무 - 작은+나무판)': designRange };
+  const angleKeys = Object.keys(rows[0]).filter(k => k.endsWith('°') && !k.includes('('));
+  if (rows[0]['가장 먼 각도'] === CONTROL.maxAngle || rows[3]['가장 먼 각도'] === CONTROL.maxAngle) problems.push('날개형이 가장 높은 각도에서 가장 멀리 감');
+  const spread = Math.max(...angleKeys.map(k => rows[3][k])) - Math.min(...angleKeys.map(k => rows[3][k]));
+  if (spread < 10) problems.push(`날개 2장: 발사 각도에 따른 거리 차이가 ${spread}m(너무 작음)`);
+
+  // 풀무: 누르면 더 멀리 / 회전날개: 두드리면 더 높이
+  const bel = gridFromRows(crafts.풀무형), rot = gridFromRows(crafts.회전날개형);
+  const belOn = simulateCraft(bel).distance, belOff = simulateCraft(bel, { blow: () => false }).distance;
+  const rotOn = simulateCraft(rot).maxHeight, rotOff = simulateCraft(rot, { tapEvery: 0 }).maxHeight;
+  if (!(belOn > belOff + 10)) problems.push(`풀무를 눌러도 별로 멀리 안 감(${belOff} → ${belOn}m)`);
+  if (!(rotOn > rotOff + 5)) problems.push(`회전날개를 두드려도 별로 안 뜸(${rotOff} → ${rotOn}m)`);
+  const summary = { '풀무 안 누름(m)': belOff, '풀무 누름(m)': belOn, '회전날개 안 두드림(높이)': rotOff, '회전날개 두드림(높이)': rotOn };
   console.table(rows);
-  console.table(pullRows);
   console.table([summary]);
   if (problems.length) console.warn('문제 ' + problems.length + '건:\n' + problems.join('\n'));
   else console.log('조종 검사 통과');
-  return { rows, pullRows, problems, summary };
+  return { rows, problems, summary };
 }
 
 // =============================================================
@@ -1235,7 +1068,8 @@ function saveSaved(key, value) { try { localStorage.setItem(key, JSON.stringify(
 
 // 단계 성공: 다음 단계를 연다. 새로 열렸으면 true
 function unlockNext(stageId) {
-  const next = Math.min(CHALLENGE_LEVELS.length, stageId + 1);
+  if (stageId >= CHALLENGE_LEVELS.length) return false; // 마지막 단계면 더 열 것이 없음
+  const next = stageId + 1;
   if (next <= progress.unlocked) return false;
   progress.unlocked = next;
   saveSaved(PROGRESS_KEY, progress);
@@ -1244,11 +1078,9 @@ function unlockNext(stageId) {
 
 // 결과 화면의 조종 안내(설계 문제가 없을 때만). 해당 없으면 null
 function controlFeedbackKey(flight, stage, success) {
-  if (flight.feedback !== 'balanced' && flight.feedback !== 'glide') return null;
+  if (flight.feedback !== 'glide') return null;
   if (flight.angle !== null && flight.angle >= CONTROL.tooHigh) return 'tooHigh';
   if (flight.angle !== null && flight.angle <= CONTROL.tooLow) return 'tooLow';
-  if (stage && stage.drums > 0 && flight.drumsUsed === 0) return 'noDrum';
-  if (stage && flight.drumsUsed > 0 && success) return 'drumWin';
   return null;
 }
 
@@ -1275,7 +1107,7 @@ const py = m => GROUND_Y - m * WORLD_SCALE;
 const images = {};
 const game = {
   screen: 'title', dirty: true, lastInput: 0, canvasK: 1,
-  pick: { ...CONFIG.defaults },
+
   history: [], flight: null, isRetry: false, goodbye: false, lastQuiz: -1,
   quizHamo: 'quiz',
   mode: 'easy', parts: null, collect: null, stage: 1,
@@ -1507,11 +1339,10 @@ function drawStar(c, x, y, r) {
 // 단계 카드의 새 요소 그림
 function drawStageIcon(c, kind) {
   if (kind === 'spot') { c.save(); c.translate(48, 46); c.scale(0.95, 0.95); drawHideSpot(c, 'box', false); c.restore(); }
-  else if (kind === 'cracked') drawItem(c, 'crackedBamboo', 48, 48, 1);
+  else if (PARTS[kind]) { c.save(); c.translate(48, 48); drawPart(c, kind, 80, { spin: 0.5 }); c.restore(); }
   else if (kind === 'villager') drawVillager(c, { x: 48, y: 50, color: '#6a9bd1', talked: true }, 0);
   else if (kind === 'trade') drawItem(c, 'jar', 48, 50, 1);
   else if (kind === 'chicken') drawChicken(c, 50, 48, 0.95, false, true);
-  else if (kind === 'drum') drawDrum(c, 48, 50, 1.25);
   else if (kind === 'pull') {
     c.strokeStyle = '#d8362f'; c.lineWidth = 6; c.lineCap = 'round';
     c.beginPath(); c.moveTo(80, 22); c.lineTo(26, 70); c.stroke();
@@ -1686,97 +1517,6 @@ function drawAyoShape(c, r) {
     circle(c, Math.cos(a) * r * 1.02, Math.sin(a) * r * 1.02, r * 0.14);
     fillStroke(c, C.pearl, 2);
   }
-}
-
-// 비거에 탄 아요: 상반신만 보인다(아랫부분은 몸통이 가림). 원점이 비거 몸통 가운데
-function drawAyoSeated(c) {
-  const hullTop = -8, img = images.ayo, A = AYO_SIZE;
-  if (!img) { drawAyo(c, A.seatX, hullTop - A.onBigeo * 0.32, A.onBigeo); return; }
-  const k = A.onBigeo / img.height, w = img.width * k, srcH = img.height * A.showTop;
-  // 아랫변이 몸통 뒤로 살짝 들어가도록 6만큼 내려서 그린다
-  c.drawImage(img, 0, 0, img.width, srcH, A.seatX - w / 2, hullTop + 6 - srcH * k, w, srcH * k);
-}
-
-// 날개 한 장 (size: 그림 크기, flap: 날갯짓 0~1)
-function wingPath(c, size, flap) {
-  const s = size * 170, up = 1 + (flap || 0) * 0.08;
-  const rootF = 40 * Math.max(0.75, size), rootB = -48 * Math.max(0.75, size);
-  const tipX = -0.32 * s, tipY = -s * up;
-  c.beginPath();
-  c.moveTo(rootF, -6);
-  c.quadraticCurveTo(rootF * 0.9, -s * 0.72 * up, tipX, tipY);
-  // 뒤쪽 깃털 세 칸
-  const N = 3;
-  for (let i = 1; i <= N; i++) {
-    const a = (i - 1) / N, b = i / N;
-    const x0 = tipX + (rootB - tipX) * a, y0 = tipY + (-6 - tipY) * a;
-    const x1 = tipX + (rootB - tipX) * b, y1 = tipY + (-6 - tipY) * b;
-    const mx = (x0 + x1) / 2 - s * 0.16, my = (y0 + y1) / 2 - s * 0.03;
-    c.quadraticCurveTo(mx, my, x1, y1);
-  }
-  c.closePath();
-}
-
-function drawWingShape(c, wingKey, flap) {
-  const size = CONFIG.wings[wingKey].drawSize;
-  c.save(); c.translate(14, 0); c.rotate(0.3); wingPath(c, size, flap); fillStroke(c, C.wingBack); c.restore();
-  wingPath(c, size, flap); fillStroke(c, C.wing);
-  // 살대
-  const s = size * 170;
-  c.strokeStyle = C.woodDark; c.lineWidth = 4; c.lineCap = 'round';
-  c.beginPath(); c.moveTo(-4, -8); c.lineTo(-0.28 * s, -s * 0.84); c.stroke();
-  c.lineCap = 'butt';
-}
-
-function hullPath(c) {
-  c.beginPath();
-  c.moveTo(-108, -8); c.lineTo(112, -8);
-  c.quadraticCurveTo(104, 38, 58, 40);
-  c.lineTo(-62, 40);
-  c.quadraticCurveTo(-100, 38, -108, -8);
-  c.closePath();
-}
-
-function drawHull(c, bodyKey) {
-  const main = bodyKey === 'bamboo' ? C.bamboo : bodyKey === 'iron' ? C.iron : C.wood;
-  const dark = bodyKey === 'bamboo' ? C.bambooDark : bodyKey === 'iron' ? C.ironDark : C.woodDark;
-  // 꼬리
-  c.beginPath(); c.moveTo(-96, -6); c.lineTo(-146, -44); c.lineTo(-128, 8); c.closePath();
-  fillStroke(c, main);
-  hullPath(c); c.fillStyle = main; c.fill();
-  c.save(); hullPath(c); c.clip();
-  c.strokeStyle = c.fillStyle = dark;
-  if (bodyKey === 'bamboo') {       // 대나무 마디
-    c.lineWidth = 5;
-    for (let x = -80; x <= 90; x += 42) { c.beginPath(); c.moveTo(x, -10); c.lineTo(x, 42); c.stroke(); }
-  } else if (bodyKey === 'wood') {  // 나무판 줄
-    c.lineWidth = 3.5;
-    for (const y of [8, 24]) { c.beginPath(); c.moveTo(-110, y); c.lineTo(112, y); c.stroke(); }
-  } else {                          // 쇠 징
-    for (let x = -80; x <= 90; x += 34) { circle(c, x, 4, 5); c.fill(); circle(c, x, 26, 5); c.fill(); }
-  }
-  c.restore();
-  hullPath(c); c.lineWidth = 4; c.strokeStyle = C.ink; c.lineJoin = 'round'; c.stroke();
-}
-
-function drawStone(c, ballastKey) {
-  const x = CONFIG.ballasts[ballastKey].drawX;
-  c.strokeStyle = C.ink; c.lineWidth = 4;
-  c.beginPath(); c.moveTo(x, 38); c.lineTo(x, 56); c.stroke();
-  circle(c, x, 70, 18); fillStroke(c, C.stone);
-}
-
-// 비거 전체: 원점이 몸통 중앙
-function drawBigeo(c, pick, x, y, scale, pitchDeg, flap) {
-  c.save();
-  c.translate(x, y);
-  c.rotate(-(pitchDeg || 0) * Math.PI / 180);
-  c.scale(scale, scale);
-  drawStone(c, pick.ballast);
-  drawWingShape(c, pick.wing, flap);
-  drawAyoSeated(c);
-  drawHull(c, pick.body);
-  c.restore();
 }
 
 // ----- 칸 조립 부품 그림: 원점이 칸 가운데, s = 칸 크기 -----
@@ -1963,7 +1703,7 @@ function renderPhotoBg(c, key) {
 
 // challenge: 도전 모드 비행 배경이면 목표 거리(왼쪽이 진주성, 오른쪽이 성 밖)
 function renderLandscape(c, withRuler, challenge) {
-  const w = CONFIG.world, f = CONFIG.flight;
+  const w = CONFIG.world, f = CRAFT_FLIGHT;
   const bottom = withRuler ? RULER_Y : H;
   // 비행 화면: 사진은 배경으로만 쓰고 언덕·모래밭·눈금은 그 위에 그린다
   const photo = withRuler && drawPhoto(c, 'flight', bottom, challenge ? BG_PHOTOS.flight.focusXChallenge : BG_PHOTOS.flight.focusX);
@@ -2179,33 +1919,12 @@ function renderPlace(c, p) {
 // 부품 아이콘 (원점이 가운데, 약 60px 크기)
 function drawItem(c, type, x, y, s) {
   c.save(); c.translate(x, y); c.scale(s, s);
-  if (type === 'bamboo' || type === 'crackedBamboo') {
-    c.rotate(0.25);
-    roundBox(c, -9, -34, 18, 68, 6); fillStroke(c, '#7dbb5a', 3);
-    c.strokeStyle = '#4c7f35'; c.lineWidth = 3;
-    for (const yy of [-12, 12]) { c.beginPath(); c.moveTo(-9, yy); c.lineTo(9, yy); c.stroke(); }
-    if (type === 'crackedBamboo') { // 금 선
-      c.strokeStyle = '#2b2a26'; c.lineWidth = 3;
-      c.beginPath(); c.moveTo(-3, -30); c.lineTo(4, -20); c.lineTo(-4, -8); c.lineTo(5, 4); c.lineTo(-3, 16); c.lineTo(3, 30); c.stroke();
-    }
-  } else if (type === 'wood') {
-    roundBox(c, -34, -16, 68, 32, 5); fillStroke(c, C.wood, 3);
+  if (PARTS[type]) {
+    drawPart(c, type, 70, { spin: 0.5 }); // 조립 부품은 조립 화면과 같은 그림
+  } else if (type === 'record') {
+    roundBox(c, -24, -28, 48, 56, 4); fillStroke(c, '#f3e1b5', 3);
     c.strokeStyle = C.woodDark; c.lineWidth = 3;
-    c.beginPath(); c.moveTo(-28, -5); c.lineTo(28, -5); c.moveTo(-28, 6); c.lineTo(28, 6); c.stroke();
-  } else if (type === 'iron') {
-    c.beginPath(); c.moveTo(-30, 18); c.lineTo(-22, -12); c.lineTo(4, -22); c.lineTo(28, -8); c.lineTo(32, 18); c.closePath();
-    fillStroke(c, C.ironDark, 3);
-    c.fillStyle = C.iron; c.beginPath(); c.moveTo(-14, -6); c.lineTo(4, -13); c.lineTo(10, -3); c.lineTo(-8, 4); c.closePath(); c.fill();
-  } else if (type === 'paper' || type === 'tornPaper') {
-    c.rotate(-0.08);
-    c.beginPath();
-    if (type === 'tornPaper') { // 찢어진 모서리
-      c.moveTo(-25, -28); c.lineTo(2, -28); c.lineTo(8, -18); c.lineTo(14, -12); c.lineTo(11, -2); c.lineTo(20, 4); c.lineTo(25, 2);
-      c.lineTo(25, 28); c.lineTo(-25, 28); c.closePath();
-    } else c.rect(-25, -28, 50, 56);
-    fillStroke(c, '#ffffff', 3);
-    c.strokeStyle = C.wallDark; c.lineWidth = 3;
-    c.beginPath(); c.moveTo(-16, -12); c.lineTo(16, -12); c.moveTo(-16, 4); c.lineTo(16, 4); c.stroke();
+    c.beginPath(); for (const yy of [-14, -2, 10]) { c.moveTo(-14, yy); c.lineTo(14, yy); } c.stroke();
   } else if (type === 'jar') {
     c.beginPath(); c.moveTo(-12, -26); c.quadraticCurveTo(-34, -4, -20, 28); c.lineTo(20, 28); c.quadraticCurveTo(34, -4, 12, -26); c.closePath();
     fillStroke(c, '#8a5a36', 3);
@@ -2215,12 +1934,6 @@ function drawItem(c, type, x, y, s) {
     fillStroke(c, '#5a5f66', 3);
     c.beginPath(); c.moveTo(-38, -10); c.lineTo(38, -10); c.lineWidth = 6; c.strokeStyle = C.ink; c.stroke();
     c.beginPath(); c.moveTo(-14, -12); c.quadraticCurveTo(0, -30, 14, -12); c.closePath(); fillStroke(c, '#7c828a', 3);
-  } else if (type === 'string') {
-    const curve = () => { c.beginPath(); c.moveTo(-30, 12); c.bezierCurveTo(-16, -30, 2, 30, 12, -4); c.bezierCurveTo(16, -18, 28, -16, 30, -2); c.stroke(); };
-    c.lineCap = 'round';
-    c.strokeStyle = C.ink; c.lineWidth = 12; curve();
-    c.strokeStyle = '#f4cc3c'; c.lineWidth = 7; curve();
-    c.lineCap = 'butt';
   }
   c.restore();
 }
@@ -2356,7 +2069,7 @@ function go(name, arg) {
   lastSpoken = '';
   ui.replaceChildren();
   // 비행 화면에서는 터치 끌기가 스크롤로 끊기지 않게 한다
-  document.getElementById('stage').classList.toggle('flying', name === 'flight' || name === 'legacyFlight' || name === 'build');
+  document.getElementById('stage').classList.toggle('flying', name === 'flight' || name === 'build');
   ui.className = '';
   screens[name].enter(arg);
   if (name !== 'title' && game.screen === name) ui.append(homeButton());
@@ -2389,7 +2102,6 @@ function switchMode(mode) {
   game.collect = null;
   game.goodbye = false;
   if (mode === 'challenge') { startChallenge(); return; }
-  game.pick = { ...CONFIG.defaults };
   game.grid = null; game.buildRules = null; game.stageDef = null; game.autoLaunch = false;
   game.isRetry = false;
   go('stagePick');
@@ -2398,7 +2110,6 @@ function switchMode(mode) {
 // 새 손님을 위해 판 기록과 선택을 비운다
 function newSession() {
   game.history = [];
-  game.pick = { ...CONFIG.defaults };
   game.grid = null; game.buildRules = null; game.stageDef = null; game.autoLaunch = false;
   game.isRetry = false;
   game.mode = 'easy';
@@ -2687,108 +2398,6 @@ screens.records = {
   draw() {
     drawBg();
     drawHamo(ctx, this.done ? 'recordDone' : 'record', 150, 968, 200, 210);
-  },
-};
-
-// ----- build -----
-function drawWingCard(c, key) { c.translate(150, 150); c.scale(0.72, 0.72); drawWingShape(c, key, 0); }
-function drawBodyCard(c, key) { c.translate(170, 80); c.scale(0.78, 0.78); drawHull(c, key); }
-function drawBallastCard(c, key) {
-  c.translate(170, 40); c.scale(0.78, 0.78);
-  drawStone(c, key);
-  drawHull(c, 'wood');
-}
-
-// 자물쇠 그림(잠긴 카드 오른쪽 위)
-function drawLock(c) {
-  c.setTransform(1, 0, 0, 1, 0, 0);
-  c.lineWidth = 8; c.strokeStyle = C.ink;
-  c.beginPath(); c.arc(278, 38, 18, Math.PI, 0); c.stroke();
-  roundBox(c, 250, 38, 56, 44, 8); fillStroke(c, '#8a867c', 5);
-  c.fillStyle = C.ink; circle(c, 278, 58, 7); c.fill();
-}
-
-// locked(key): 잠긴 부품이면 안내 문구, 아니면 null / tagOf(key): 이름 아래 문구
-function partGroup(label, slot, table, drawFn, locked, tagOf) {
-  const group = el('section', 'part-group');
-  group.append(el('h2', '', label));
-  const row = el('div', 'part-row');
-  for (const key of Object.keys(table)) {
-    const card = el('button', 'card');
-    card.type = 'button';
-    card.dataset.slot = slot; card.dataset.key = key;
-    const pic = el('canvas');
-    pic.width = 320; pic.height = 160;
-    const lockText = locked ? locked(key) : null;
-    const picCtx = pic.getContext('2d');
-    drawFn(picCtx, key);
-    if (lockText) { drawLock(picCtx); card.disabled = true; }
-    card.append(pic);
-    const part = table[key];
-    card.append(el('span', 'name', part.name));
-    const tag = lockText || (tagOf ? tagOf(key) : part.tag);
-    if (tag) card.append(el('span', 'tag', `(${tag})`));
-    card.setAttribute('aria-pressed', String(game.pick[slot] === key));
-    card.addEventListener('click', () => {
-      game.pick[slot] = key;
-      row.querySelectorAll('.card').forEach(b => b.setAttribute('aria-pressed', String(b === card)));
-      game.dirty = true;
-      screens.legacyBuild.refreshNotes();
-    });
-    row.append(card);
-  }
-  group.append(row);
-  return group;
-}
-
-screens.legacyBuild = {
-  enter() {
-    setBg('build');
-    const panel = el('div', 'build-panel');
-    const parts = game.mode === 'challenge' ? game.parts : null;
-    const S = CHALLENGE_STORY;
-    const needText = key => S.needPaper.replace('{n}', CHALLENGE.wingNeedPaper[key]);
-    panel.append(
-      parts
-        ? partGroup(S.wingLabelCount.replace('{n}', parts.paper), 'wing', CONFIG.wings, drawWingCard, k => (wingUnlocked(parts, k) ? null : needText(k)), needText)
-        : partGroup(TEXT.wingLabel, 'wing', CONFIG.wings, drawWingCard),
-      parts
-        ? partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard, k => (parts.bodies.includes(k) ? null : S.noMaterial),
-            k => (k === 'bamboo' && parts.crackedOnly ? S.crackedTag : CONFIG.bodies[k].tag))
-        : partGroup(TEXT.bodyLabel, 'body', CONFIG.bodies, drawBodyCard),
-      partGroup(TEXT.ballastLabel, 'ballast', CONFIG.ballasts, drawBallastCard),
-    );
-    ui.append(panel);
-    this.bubble = el('div', 'bubble build-bubble');
-    this.note = el('div', 'state-note');
-    ui.append(this.note, this.bubble);
-    this.refreshNotes();
-    ui.append(button('primary big fly-btn', TEXT.fly, () => go('legacyFlight'), 'plane'));
-  },
-  // 고른 부품에 따라 안내를 바꾼다: 첫 안내는 하모 말풍선, 나머지는 회색 칸
-  refreshNotes() {
-    if (game.screen !== 'legacyBuild') return;
-    const S = CHALLENGE_STORY;
-    if (game.mode !== 'challenge') {
-      this.bubble.textContent = game.isRetry ? TEXT.buildRetry : TEXT.buildHello;
-      this.note.hidden = true;
-      return;
-    }
-    const parts = game.parts, notes = [];
-    if (usesCracked(parts, game.pick)) notes.push(S.crackedNote);
-    if (parts.torn > 0) notes.push(S.tornNote);
-    if (!parts.hasString) notes.push(S.noString);
-    this.bubble.textContent = notes[0] || S.buildHello;
-    this.note.replaceChildren(...notes.slice(1).map(t => el('p', '', t)));
-    this.note.hidden = notes.length < 2;
-  },
-  // 흔들리는 조합이면 날개가 흔들리는 모습을 계속 보여 준다
-  get animated() { return game.mode === 'challenge' && game.parts && liftScaleOf(game.parts, game.pick) < 1; },
-  draw(now) {
-    drawBg();
-    const wobble = this.animated ? Math.sin(now / 70) * 0.9 : 0;
-    drawBigeo(ctx, game.pick, 420, 330, 1.6, wobble * 1.5, wobble);
-    drawHamo(ctx, game.isRetry ? 'retry' : 'build', 130, 720, 220, 230);
   },
 };
 
@@ -3081,7 +2690,7 @@ screens.flight = {
     this.grid = copyGrid(game.grid);
     this.info = analyzeCraft(this.grid);
     this.stage = game.stageDef || null;
-    setBg(this.stage ? 'stage' + this.stage.id : 'flight');
+    setBg(this.stage ? 'stage' + this.stage.id : game.mode === 'challenge' ? 'flightC' + currentStage().goal : 'flight');
     ui.className = 'collecting'; // 끌거나 누르는 동안 화면이 움직이지 않게
     this.st = null;
     this.result = null;
@@ -3382,355 +2991,6 @@ screens.flight = {
   },
 };
 
-// ----- legacyFlight: 예전 3가지 고르기 비행(도전 모드 연결 전까지) -----
-
-screens.legacyFlight = {
-  animated: true,
-  enter() {
-    const challenge = game.mode === 'challenge', stage = currentStage();
-    setBg(challenge ? 'flightC' + stage.goal : 'flight');
-    ui.className = 'collecting'; // 끄는 동안 화면이 움직이지 않게
-    this.manual = challenge ? stage.launch === 'pull' : settings.easyControl;
-    this.thermal = challenge || settings.easyControl; // 쉬운 모드 자동 비행은 기존 결과 그대로
-    this.maxDrums = challenge ? stage.drums : 0;
-    this.scale = challenge ? liftScaleOf(game.parts, game.pick) : 1;
-    this.ctl = null;
-    this.pops = [];
-    this.drumAt = -1e9;
-    this.pauseAt = 0;
-    this.landed = false;
-    this.drumTutorialPending = false;
-    game.flight = null;
-    game.flightCursor = 0;
-    if (this.manual) {
-      const K = CONTROL;
-      this.phase = 'aim';
-      this.aim = { angle: K.startAngle, power: K.startPower, active: false, dragging: false, pull: 0, previewKey: '', preview: [] };
-      this.aimStart = performance.now();
-      showTutorial('pull', px(0) - 120, py(CONFIG.flight.launchHeight) + 40);
-    } else {
-      this.launch();
-    }
-  },
-  onPause() { this.pauseAt = performance.now(); },
-  onResume() {
-    const gap = performance.now() - this.pauseAt;
-    this.pauseAt = 0;
-    game.flightStart += gap;
-    this.aimStart += gap;
-  },
-  // 발사: angle이 없으면 자동 발사(최적 각도·세기)
-  launch(angle, power) {
-    const p = game.pick;
-    if (this.thermal || angle !== undefined) {
-      this.ctl = { thermal: this.thermal, drums: [] };
-      if (angle !== undefined) { this.ctl.angle = angle; this.ctl.power = power; }
-    }
-    const fl = simulateFlight(p.wing, p.body, p.ballast, this.scale, this.ctl);
-    fl.rate = fl.simSeconds / fl.playSeconds; // 비행 내내 같은 빠르기로 재생
-    game.flight = fl;
-    game.flightStart = performance.now() - (angle !== undefined ? READY_MS : 0);
-    game.flightCursor = 0;
-    this.phase = 'fly';
-    if (angle !== undefined) sfx.play('launch');
-    if (this.maxDrums > 0) this.drumTutorialPending = true;
-  },
-
-  // ----- 조준 -----
-  pointerDown(x, y, e) {
-    if (this.phase === 'fly') { this.tapDrum(); return; }
-    const ox = px(0), oy = py(CONFIG.flight.launchHeight);
-    if (this.aim.dragging) return; // 이미 한 손가락으로 당기는 중이면 다른 손가락은 무시
-    if (Math.hypot(x - ox, y - oy) > 230) return; // 비거 근처를 눌러야 잡힘
-    this.aim.pointerId = e ? e.pointerId : null;
-    // 손가락이 화면 밖으로 나가도 놓을 때까지 받는다
-    try { if (e) ui.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
-    this.aim.dragging = true;
-    this.aim.active = true;
-    this.aimStart = performance.now();
-    this.dragTo(x, y);
-  },
-  dragTo(x, y) {
-    const a = this.aim, ox = px(0), oy = py(CONFIG.flight.launchHeight);
-    if (!a.dragging) return;
-    this.aimStart = performance.now();
-    const aim = aimFromPull(x - ox, y - oy);
-    a.pull = aim.pull;
-    a.cancel = aim.cancel;
-    a.active = !aim.cancel; // 오른쪽으로 밀면 발사 취소
-    if (aim.cancel) return;
-    a.power = aim.power;
-    if (aim.pull > 8) a.angle = aim.angle;
-  },
-  pointerUp() {
-    const a = this.aim;
-    if (!a || !a.dragging) return;
-    a.dragging = false;
-    if (a.cancel || a.pull < CONTROL.minPull) { a.active = false; a.cancel = false; return; } // 살짝 끌거나 앞으로 밀면 발사하지 않음
-    this.launch(a.angle, a.power);
-  },
-  // 터치가 끊기면 발사하지 않고 처음으로
-  cancelDrag() {
-    const a = this.aim;
-    if (a && a.dragging) { a.dragging = false; a.active = false; a.cancel = false; }
-  },
-  key(k) {
-    const K = CONTROL;
-    if (this.phase === 'fly') { if (k === ' ') this.tapDrum(); return; }
-    const a = this.aim;
-    a.active = true;
-    this.aimStart = performance.now();
-    if (k === 'ArrowUp') a.angle = clamp(a.angle + K.keyAngleStep, K.minAngle, K.maxAngle);
-    else if (k === 'ArrowDown') a.angle = clamp(a.angle - K.keyAngleStep, K.minAngle, K.maxAngle);
-    else if (k === 'ArrowRight') a.power = clamp(a.power + K.keyPowerStep, K.minPower, 1);
-    else if (k === 'ArrowLeft') a.power = clamp(a.power - K.keyPowerStep, K.minPower, 1);
-    else if (k === ' ') this.launch(a.angle, a.power);
-  },
-  powerColor(power) {
-    return (CONTROL.powerBands.find(b => power <= b.upTo + 1e-6) || CONTROL.powerBands[0]).color;
-  },
-  drawAim(now) {
-    const K = CONTROL, a = this.aim, ox = px(0), oy = py(CONFIG.flight.launchHeight);
-    // 15·30·45도 눈금
-    ctx.fillStyle = C.ink;
-    ctx.font = '800 34px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    for (const deg of K.angleMarks) {
-      const r = deg * Math.PI / 180;
-      ctx.lineWidth = 5; ctx.strokeStyle = C.ink;
-      ctx.beginPath(); ctx.moveTo(ox + Math.cos(r) * 130, oy - Math.sin(r) * 130); ctx.lineTo(ox + Math.cos(r) * 190, oy - Math.sin(r) * 190); ctx.stroke();
-      haloText(ctx, deg + '°', ox + Math.cos(r) * 232, oy - Math.sin(r) * 232);
-    }
-    ctx.fillStyle = C.ink;
-    // 비거는 손가락이 있는 쪽으로 끌려간다(각도에서 끈 방향을 되짚음)
-    const strength = clamp((a.power - K.minPower) / (1 - K.minPower), 0, 1);
-    const tilt = (a.angle - K.optAngle) / K.pullAngleScale * Math.PI / 180;
-    const back = a.active ? strength * 95 + 15 : 0;
-    const bx = ox - Math.cos(tilt) * back, by = oy + Math.sin(tilt) * back;
-    if (a.active) {
-      // 예상 궤적(앞부분만)
-      const key = Math.round(a.angle) + '/' + a.power.toFixed(2);
-      if (key !== a.previewKey) {
-        const p = game.pick;
-        const s = simulateFlight(p.wing, p.body, p.ballast, this.scale, { angle: a.angle, power: a.power, thermal: this.thermal }).samples;
-        a.preview = s.slice(0, Math.ceil(s.length * K.previewShare));
-        a.previewKey = key;
-      }
-      ctx.strokeStyle = C.ink; ctx.lineWidth = 5; ctx.setLineDash([12, 16]); ctx.lineCap = 'round';
-      ctx.beginPath();
-      a.preview.forEach((q, i) => { if (i === 0) ctx.moveTo(px(q.x), py(q.y)); else ctx.lineTo(px(q.x), py(q.y)); });
-      ctx.stroke();
-      ctx.setLineDash([]); ctx.lineCap = 'butt';
-    }
-    drawBigeo(ctx, game.pick, bx, by, 0.62, a.angle, 0);
-    if (a.active) {
-      // 고무줄: 길이 = 세기(3단계 색)
-      ctx.strokeStyle = this.powerColor(a.power); ctx.lineWidth = 9; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(ox + 26, oy + 34); ctx.lineTo(bx, by + 10); ctx.lineTo(ox - 66, oy + 28); ctx.stroke();
-      ctx.lineCap = 'butt';
-      // 현재 각도와 세기 막대
-      const rx = ox + 270, ry = oy - 158, rw = 300;
-      ctx.fillStyle = C.ink; ctx.font = '900 92px system-ui, sans-serif'; ctx.textAlign = 'left';
-      haloText(ctx, Math.round(a.angle) + '°', rx, ry);
-      roundBox(ctx, rx, ry + 54, rw, 44, 14); fillStroke(ctx, C.paper, 4);
-      if (strength > 0.01) { roundBox(ctx, rx + 5, ry + 59, (rw - 10) * strength, 34, 10); ctx.fillStyle = this.powerColor(a.power); ctx.fill(); }
-    }
-    // 오래 가만히 있으면 손가락 안내
-    if (!a.dragging && now - this.aimStart > K.idleHintSeconds * 1000 && !game.tut) {
-      const t = ((now - this.aimStart) % 1400) / 1400, k = t < 0.7 ? t / 0.7 : 1;
-      drawFinger(ctx, ox - 130 * k, oy + 16, 1.5);
-      ctx.fillStyle = C.ink; ctx.font = '900 64px system-ui, sans-serif'; ctx.textAlign = 'center';
-      haloText(ctx, CONTROL_TEXT.pullHint, 960, 200);
-    }
-    ctx.textBaseline = 'middle';
-  },
-
-  // ----- 배 두드리기 -----
-  tapDrum() {
-    const fl = game.flight;
-    if (!fl || this.maxDrums <= 0 || game.tut || !this.ctl || this.ctl.drums.length >= this.maxDrums) return;
-    const flyMs = performance.now() - game.flightStart - READY_MS;
-    const simT = (flyMs / 1000) * fl.rate;
-    if (simT <= 0 || simT >= fl.simSeconds) return;
-    this.ctl.drums.push(simT);
-    const p = game.pick, again = simulateFlight(p.wing, p.body, p.ballast, this.scale, this.ctl);
-    again.rate = fl.rate;
-    game.flight = again;
-    this.drumAt = performance.now();
-    const pos = this.sampleAt(simT);
-    this.pops.push({ x: px(pos.x) + 80, y: py(pos.y) - 90, at: this.drumAt });
-    sfx.play('drum');
-  },
-  drawDrums(now) {
-    const used = this.ctl ? this.ctl.drums.length : 0;
-    for (let i = 0; i < this.maxDrums; i++) drawDrum(ctx, 960 + (i - (this.maxDrums - 1) / 2) * 96, 68, 1, i < used);
-    this.pops = this.pops.filter(q => now - q.at < 700);
-    for (const q of this.pops) {
-      const k = (now - q.at) / 700;
-      ctx.save(); ctx.globalAlpha = 1 - k; ctx.fillStyle = C.orangeDark;
-      ctx.font = '900 84px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      haloText(ctx, CONTROL_TEXT.drumPop, q.x, q.y - k * 70);
-      ctx.restore();
-    }
-  },
-  // 아요가 몸통을 두드리는 앞발
-  drawPaw(x, y, pitch, now) {
-    const age = now - this.drumAt;
-    if (age > 260) return;
-    const hit = Math.abs(Math.sin(age / 260 * Math.PI * 2));
-    ctx.save();
-    ctx.translate(x, y); ctx.rotate(-pitch * Math.PI / 180); ctx.scale(0.62, 0.62);
-    ctx.beginPath(); ctx.ellipse(AYO_SIZE.seatX - 50, -30 + hit * 22, 20, 15, -0.4, 0, Math.PI * 2);
-    fillStroke(ctx, C.orange, 4);
-    ctx.restore();
-  },
-  // 상승 기류: 남강 위의 아지랑이 세로 물결
-  drawThermals(now) {
-    if (!this.thermal) return;
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 7; ctx.lineCap = 'round';
-    for (const z of CONTROL.thermals) {
-      const x0 = px(z.from), x1 = px(z.to), n = 4;
-      for (let i = 0; i < n; i++) {
-        const x = x0 + (x1 - x0) * (i + 0.5) / n;
-        ctx.beginPath();
-        for (let y = GROUND_Y; y > py(CONFIG.flight.launchHeight) - 40; y -= 22) {
-          const wave = Math.sin(y / 34 + now / 260 + i * 1.7) * 9;
-          if (y === GROUND_Y) ctx.moveTo(x + wave, y); else ctx.lineTo(x + wave, y);
-        }
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
-  },
-
-  // 재생 시간에 맞는 궤적 위치를 보간해서 구한다
-  sampleAt(simT) {
-    const s = game.flight.samples;
-    let i = game.flightCursor;
-    if (i >= s.length || s[i].t > simT) i = 0;
-    while (i < s.length - 2 && s[i + 1].t <= simT) i++;
-    game.flightCursor = i;
-    const a = s[i], b = s[Math.min(i + 1, s.length - 1)];
-    const k = b.t > a.t ? clamp((simT - a.t) / (b.t - a.t), 0, 1) : 0;
-    return { i, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, pitch: a.pitch + (b.pitch - a.pitch) * k };
-  },
-  drawTrail(pos) {
-    const s = game.flight.samples;
-    ctx.strokeStyle = C.ink; ctx.lineWidth = 5; ctx.setLineDash([16, 16]); ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(px(s[0].x), py(s[0].y));
-    for (let j = 1; j <= pos.i; j += 2) ctx.lineTo(px(s[j].x), py(s[j].y));
-    ctx.lineTo(px(pos.x), py(pos.y));
-    ctx.stroke();
-    ctx.setLineDash([]); ctx.lineCap = 'butt';
-  },
-  drawReadout(meters) {
-    ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 5;
-    roundBox(ctx, 1560, 30, 330, 110, 28); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = C.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '900 76px system-ui, sans-serif';
-    ctx.fillText(`${Math.round(meters)} m`, 1725, 88);
-  },
-  drawFlag(x) {
-    const fx = px(x);
-    ctx.fillStyle = C.orange; ctx.strokeStyle = C.ink; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.moveTo(fx, RULER_Y + 2); ctx.lineTo(fx - 22, RULER_Y - 32); ctx.lineTo(fx + 22, RULER_Y - 32); ctx.closePath(); ctx.fill(); ctx.stroke();
-  },
-  draw(now) {
-    if (game.tut && this.pauseAt) now = this.pauseAt; // 안내 중에는 멈춤
-    drawBg();
-    this.drawThermals(now);
-    if (this.phase === 'aim') {
-      this.drawAim(now);
-      this.drawReadout(0);
-      return;
-    }
-    const fl = game.flight;
-    const elapsed = now - game.flightStart;
-    const flyMs = elapsed - READY_MS;
-    if (this.maxDrums > 0) this.drawDrums(now);
-
-    if (flyMs < 0) {                 // 출발 준비
-      const first = fl.samples[0];
-      drawBigeo(ctx, game.pick, px(first.x), py(first.y), 0.62, 8, 0);
-      ctx.fillStyle = C.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.font = '900 110px system-ui, sans-serif';
-      ctx.fillText(TEXT.go, 960, 280);
-      this.drawReadout(0);
-      return;
-    }
-    const simT = (flyMs / 1000) * fl.rate;
-    if (simT < fl.simSeconds) {      // 비행 중
-      const pos = this.sampleAt(simT);
-      this.drawTrail(pos);
-      // 금 간 대나무나 끈이 없으면 비행 중에 흔들린다
-      const shake = fl.liftScale < 1 ? Math.sin(now / 55) : 0;
-      drawBigeo(ctx, game.pick, px(pos.x), py(pos.y) + shake * 5, 0.62, pos.pitch + shake * 7, Math.sin(now / 90) * 0.5 + 0.5);
-      this.drawPaw(px(pos.x), py(pos.y) + shake * 5, pos.pitch + shake * 7, now);
-      this.drawReadout(pos.x);
-      // 처음 나오는 배 두드리기 안내는 떠오른 뒤에 보여 준다
-      if (this.drumTutorialPending && simT > 0.5) {
-        this.drumTutorialPending = false;
-        showTutorial('drum', Math.min(px(pos.x) + 60, 1500), py(pos.y) + 30);
-      }
-      return;
-    }
-    // 착지·추락
-    const last = fl.samples[fl.samples.length - 1];
-    const pos = { i: fl.samples.length - 1, x: last.x, y: last.y };
-    this.drawTrail(pos);
-    const landAge = flyMs - (fl.simSeconds / fl.rate) * 1000;
-    if (!this.landed) { this.landed = true; sfx.play(fl.inRiver ? 'splash' : 'empty'); }
-    if (fl.inRiver) this.drawSplash(last, landAge);
-    else this.drawLanded(last, landAge);
-    this.drawFlag(last.x);
-    this.drawReadout(fl.distance);
-
-    if (landAge > LAND_MS) {
-      this.landed = false;
-      go('result');
-    }
-  },
-  drawSplash(last, age) {
-    const cx = px(last.x);
-    const sink = Math.min(1, age / 300);
-    const tilt = 10 + Math.sin(age / 300) * 3; // 물 위에서 흔들리는 각도
-    drawBigeo(ctx, game.pick, cx, GROUND_Y - 20 + sink * 34, 0.62, last.pitch + (tilt - last.pitch) * sink, 0);
-    // 강 아래쪽을 다시 덮어서 잠긴 것처럼 보이게 한다
-    const k = game.canvasK, top = GROUND_Y + 34;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(bg, 0, top * k, W * k, (RULER_Y - top) * k, 0, top * k, W * k, (RULER_Y - top) * k);
-    resetTransform(ctx);
-    // 물방울
-    if (age < 700) {
-      const a = age / 700;
-      ctx.fillStyle = C.cloud;
-      for (const [dx, h, r] of [[-70, 110, 16], [-34, 170, 20], [6, 200, 22], [46, 160, 18], [84, 100, 14]]) {
-        circle(ctx, cx + dx * (0.6 + a), GROUND_Y - h * Math.sin(a * Math.PI), r * (1 - a * 0.5));
-        ctx.fill();
-      }
-    }
-    // 강 위에 떠 있는 하모
-    if (age > 350) {
-      const pop = Math.min(1, (age - 350) / 250);
-      const w = CONFIG.world, mid = (px(w.riverStart) + px(w.riverEnd)) / 2;
-      const hx = cx < mid + 60 ? cx + 150 : cx - 150; // 비거 옆, 강 위쪽에
-      drawHamo(ctx, 'river', hx, GROUND_Y + 56 + Math.sin(age / 300) * 5, 200 * pop, 170 * pop);
-    }
-  },
-  drawLanded(last, age) {
-    const settle = Math.min(1, age / 250);
-    drawBigeo(ctx, game.pick, px(last.x), py(last.y), 0.62, last.pitch * (1 - settle), 0);
-    if (age < 500) {
-      ctx.fillStyle = C.sandDark;
-      const a = age / 500;
-      for (const [dx, r] of [[-110, 18], [-70, 24], [70, 24], [110, 18]]) {
-        circle(ctx, px(last.x) + dx * (0.7 + a * 0.6), GROUND_Y + 2 - a * 18, r * (1 - a * 0.5));
-        ctx.fill();
-      }
-    }
-  },
-};
-
 // ----- result -----
 function buildChart(compact) {
   const barMax = compact ? 3.1 : 9.4;
@@ -3753,14 +3013,10 @@ function buildChart(compact) {
     }
     grid.append(cell);
   }
-  // 칸 조립 기록이면 나는 방식·부품 수, 예전 기록이면 날개·몸통·무게추
-  const rows = runs.length && runs[runs.length - 1].style ? [
-    ['방식', r => (r.style ? STYLE_TEXT[r.style] : '')],
-    ['부품', r => (r.style ? r.parts + '개' : '')],
-  ] : [
-    [TEXT.wingLabel, r => (r.wing ? CONFIG.wings[r.wing].short : '')],
-    [TEXT.bodyLabel, r => (r.body ? CONFIG.bodies[r.body].short : '')],
-    ['무게추', r => (r.ballast ? CONFIG.ballasts[r.ballast].short : '')],
+  // 나는 방식과 부품 수
+  const rows = [
+    ['방식', r => STYLE_TEXT[r.style] || ''],
+    ['부품', r => (r.parts === undefined ? '' : r.parts + '개')],
   ];
   for (const [label, get] of rows) {
     grid.append(el('div', 'row-head', label));
@@ -3777,7 +3033,7 @@ screens.result = {
   enter() {
     setBg('paper');
     const fl = game.flight;
-    game.history.push(fl.style ? { distance: fl.distance, style: fl.style, parts: fl.parts } : { distance: fl.distance, wing: fl.wing, body: fl.body, ballast: fl.ballast });
+    game.history.push({ distance: fl.distance, style: fl.style, parts: fl.parts });
     if (game.history.length > CONFIG.historyMax) game.history.shift();
     saveTop(fl, game.mode);
     this.success = game.mode === 'challenge' && isChallengeSuccess(fl, currentStage());
@@ -3853,7 +3109,7 @@ screens.result = {
   addControlLine(fl) {
     if (fl.angle === null) return;
     const T = CONTROL_TEXT, stage = game.mode === 'challenge' ? currentStage() : null;
-    const line = (stage && stage.drums > 0 ? T.line : T.lineNoDrum).replace('{angle}', fl.angle).replace('{drums}', fl.drumsUsed);
+    const line = T.lineNoDrum.replace('{angle}', fl.angle);
     ui.append(el('p', 'abs control-line', line));
   },
   // 도전 모드 결과: 기존 결과 + 목표 안내 + 전용 피드백 + 버튼 3개
@@ -3871,7 +3127,7 @@ screens.result = {
     ui.append(el('div', 'abs goal-line', goalText));
 
     const bubble = el('div', 'bubble challenge-bubble' + (ok ? ' ok' : ''));
-    const designKey = ok ? null : challengeFeedbackKey(game.parts, game.pick);
+    const designKey = ok ? null : challengeFeedbackKey(game.parts);
     const ctlKey = designKey ? null : controlFeedbackKey(fl, stage, ok);
     if (ok) {
       bubble.append(el('p', '', S.success));
@@ -4142,14 +3398,13 @@ screens.collect = {
     game.parts = partsFromBag(c.bag, c.empties, c.stage);
     game.lastInput = performance.now();
     if (!game.parts.canBuild) { go('noParts'); return; }
-    // 가진 재료 중 가장 큰 날개, 가장 가벼운 몸통을 먼저 골라 둔다
-    const wing = ['big', 'normal', 'small'].find(k => wingUnlocked(game.parts, k));
-    const body = Object.keys(CONFIG.bodies)
-      .filter(k => game.parts.bodies.includes(k))
-      .sort((p, q) => CONFIG.bodies[p].weight - CONFIG.bodies[q].weight)[0];
-    game.pick = { wing, body, ballast: CHALLENGE.defaultBallast };
+    // 모은 부품이 그대로 조립 화면의 부품 상자가 된다(조종석은 늘 하나)
+    game.buildRules = rulesFromParts(game.parts, c.stage);
+    game.stageDef = null;
+    game.grid = null;
+    game.autoLaunch = c.stage.launch === 'auto';
     game.isRetry = false;
-    go('legacyBuild');
+    go('build');
   },
 
   // ----- 누른 곳에 무엇이 있는지 찾아서 그쪽으로 걸어간다 -----
@@ -4332,7 +3587,6 @@ screens.collect = {
     box.append(take, leave);
     ui.append(box);
     take.focus();
-    if (ITEMS[item.type].torn || ITEMS[item.type].cracked) showTutorial('state', 960, 340);
   },
   closePopup() {
     const c = game.collect;
@@ -4518,7 +3772,7 @@ screens.collect = {
     this.drawAyoTop(t);
     if (c.paper) {
       ctx.save(); ctx.translate(c.paper.x, c.paper.y); ctx.rotate(Math.sin(t / 150) * 0.5);
-      drawItem(ctx, 'paper', 0, 0, 1.25);
+      drawItem(ctx, 'wing', 0, 0, 1.25);
       ctx.restore();
       ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
       for (const d of [-26, 0, 26]) { ctx.beginPath(); ctx.moveTo(c.paper.x - 110, c.paper.y + d); ctx.lineTo(c.paper.x - 56, c.paper.y + d); ctx.stroke(); }
@@ -4725,14 +3979,7 @@ async function boot() {
     const p = toLogical(e);
     scr.pointerDown(p.x, p.y, e);
   });
-  // 비행 화면: 끌기와 놓기는 손가락이 화면 밖으로 나가도 받는다
-  // 당기기를 시작한 손가락만 따라간다(두 번째 손가락을 대었다 떼도 발사되지 않음)
-  const aimFinger = e => game.screen === 'legacyFlight' && screens.legacyFlight.phase === 'aim' && screens.legacyFlight.aim.dragging
-    && (screens.legacyFlight.aim.pointerId == null || screens.legacyFlight.aim.pointerId === e.pointerId);
-  window.addEventListener('pointermove', e => { if (aimFinger(e)) { const p = toLogical(e); screens.legacyFlight.dragTo(p.x, p.y); } });
-  window.addEventListener('pointerup', e => { if (aimFinger(e)) screens.legacyFlight.pointerUp(); });
-  window.addEventListener('pointercancel', e => { if (aimFinger(e)) screens.legacyFlight.cancelDrag(); });
-  // 조립·비행 화면: 끌기·놓기를 화면 밖에서도 받는다(각 화면이 손가락 번호를 확인)
+  // 조립·비행 화면: 끌기·놓기를 화면 밖에서도 받는다(각 화면이 시작한 손가락 번호만 따라감)
   window.addEventListener('pointermove', e => { const s = screens[game.screen]; if (s.onMove) s.onMove(e, toLogical(e)); });
   window.addEventListener('pointerup', e => { const s = screens[game.screen]; if (s.onUp) s.onUp(e, toLogical(e)); });
   window.addEventListener('pointercancel', e => { const s = screens[game.screen]; if (s.onCancel) s.onCancel(e); });
@@ -4745,14 +3992,6 @@ async function boot() {
     onFirstInput();
     if (game.tut) { e.preventDefault(); if (!e.repeat) game.tut.close(); return; } // 안내는 아무 키로 닫힘
     if (screens[game.screen].onKey) { screens[game.screen].onKey(e); return; }
-    if (game.screen === 'legacyFlight') {
-      if (ARROWS.includes(e.key) || e.key === ' ') {
-        e.preventDefault();
-        if (document.activeElement) document.activeElement.blur();
-        if (!(e.key === ' ' && e.repeat)) screens.legacyFlight.key(e.key);
-      }
-      return;
-    }
     if (game.screen !== 'collect') return;
     const c = game.collect;
     if (c.confirm || c.card || c.popup) return; // 창이 떠 있으면 버튼이 키를 받는다

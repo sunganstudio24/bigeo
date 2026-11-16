@@ -5,51 +5,6 @@
 
 // ----- 수치 설정 -----
 const CONFIG = {
-  // 날개: lift = 들어 올리는 힘, drag = 공기저항, drawSize = 그림 크기
-  // flipSlow = 뒤 무게추로 뒤집힐 때 앞 속도가 줄어드는 빠르기(작을수록 조금 더 멀리 가서 추락)
-  wings: {
-    small:  { name: '작은 날개', short: '작은', lift: 0.6, drag: 0.8, drawSize: 0.6,  flipSlow: 1.1 },
-    normal: { name: '보통 날개', short: '보통', lift: 1.0, drag: 1.0, drawSize: 0.85, flipSlow: 0.8 },
-    big:    { name: '큰 날개',   short: '큰',   lift: 1.3, drag: 1.2, drawSize: 1.12, flipSlow: 0.6 },
-  },
-  // 몸통: weight = 무게, alwaysCrash = true면 항상 추락
-  bodies: {
-    bamboo: { name: '대나무', tag: '가벼움', short: '대나무', weight: 0.8, alwaysCrash: false },
-    wood:   { name: '나무판', tag: '보통',   short: '나무판', weight: 1.0, alwaysCrash: false },
-    iron:   { name: '쇠',     tag: '무거움', short: '쇠',     weight: 1.7, alwaysCrash: true },
-  },
-  // 무게추: behavior = dive(고개 숙임) / glide(안정 활공) / flip(솟았다가 뒤집힘)
-  ballasts: {
-    front:  { name: '앞',     short: '앞',     behavior: 'dive',  alwaysCrash: false, drawX: 72 },
-    center: { name: '가운데', short: '가운데', behavior: 'glide', alwaysCrash: false, drawX: 0 },
-    back:   { name: '뒤',     short: '뒤',     behavior: 'flip',  alwaysCrash: true,  drawX: -72 },
-  },
-
-  // 처음 조립 화면에서 골라져 있는 부품
-  defaults: { wing: 'small', body: 'wood', ballast: 'front' },
-
-  // 비행 계산 값(단위: m, 초)
-  flight: {
-    launchHeight: 45,    // 출발 높이
-    launchSpeed: 20,     // 출발 앞 속도
-    launchLift: 3,       // 출발할 때 살짝 떠오르는 속도
-    groundClearance: 4.6,// 땅에 닿았다고 보는 높이(비거 그림 크기에 맞춤)
-    cruiseSpeed: 24,     // 활공 앞 속도(공기저항으로 나눔)
-    sinkBase: 15.9,      // 활공 하강 속도 기준(작을수록 오래 낢)
-    glideSharpness: 1.3, // 클수록 부품에 따른 거리 차이가 커짐
-    sinkResponse: 1.1,   // 하강 속도로 바뀌는 빠르기
-    diveRate: 0.6,       // 앞 무게추: 시간이 갈수록 하강이 빨라지는 정도
-    diveMaxPitch: 55,    // 앞 무게추: 최대로 고개 숙이는 각도
-    gravity: 15,         // 추락할 때 떨어지는 힘
-    heavyLiftShare: 0.6, // 쇠 몸통: 날개가 떨어지는 힘을 덜어 주는 정도
-    heavySlow: 0.75,     // 쇠 몸통: 앞 속도가 줄어드는 빠르기
-    flipRiseTime: 0.9,   // 뒤 무게추: 솟아오르는 시간
-    flipRisePower: 9,    // 뒤 무게추: 솟아오르는 힘
-    flipSpin: 260,       // 뒤 무게추: 뒤집히는 회전 속도(도/초)
-    minPlaySeconds: 3,   // 화면에서 보여 주는 최소 비행 시간
-    maxPlaySeconds: 6,   // 화면에서 보여 주는 최대 비행 시간
-  },
-
   // 비행 화면의 지형(단위: m, 출발점 = 0)
   world: {
     riverStart: 14,   // 남강 시작 지점
@@ -88,7 +43,7 @@ const PARTS = {
              intro: '무게추로 앞뒤 무게를 맞춰 봐!' },
   rotor:   { code: 'R', name: '회전날개',  weight: 0.9, drag: 0.25, rotor: 1, taps: 6, color: '#9bc46a',
              intro: '대나무 회전날개는 화면을 두드릴수록 빙글빙글 돌아서 위로 떠!' },
-  bellows: { code: 'B', name: '풀무',      weight: 1.2, drag: 0.18, thrust: 1, gauge: 1.2, color: '#a97f52',
+  bellows: { code: 'B', name: '풀무',      weight: 1.2, drag: 0.18, thrust: 1, gauge: 2.0, color: '#a97f52',
              intro: '풀무 버튼을 누르는 동안 바람이 나와서 앞으로 밀어 줘!' },
   wheel:   { code: 'H', name: '수레바퀴',  weight: 1.0, drag: 0.1,  roll: 1, color: '#8a5a36',
              intro: '수레바퀴를 달면 언덕을 더 빨리 굴러 내려가.' },
@@ -157,12 +112,12 @@ const STAGES = [
   {
     id: 2, name: '남강 건너기', title: '남강 건너기',
     intro: '앞에 무거운 짐을 실었어. 앞뒤 무게를 맞춰야 해!',
-    goal: { type: 'distance', value: 70 },
+    goal: { type: 'distance', value: 65 },
     parts: { cockpit: 1, frame: 3, wing: 5, weight: 2 }, newParts: ['weight'],
     locked: [{ r: 1, c: 4, key: 'weight' }],
     box: { x: 42, y: 24, r: 6 },
     stars: [{ type: 'goal' }, { type: 'maxParts', value: 4 }, { type: 'box' }],
-    recommend: ['..WW.', '.FCW.', '..WW.'],
+    recommend: ['..WW.', '..CW.', '..WW.'],
   },
   {
     id: 3, name: '높이 떠오르기', title: '높이 떠오르기',
@@ -176,7 +131,7 @@ const STAGES = [
   {
     id: 4, name: '멀리 소식 전하기', title: '멀리 소식 전하기',
     intro: '성 밖 멀리까지 소식을 전해야 해!',
-    goal: { type: 'distance', value: 110 },
+    goal: { type: 'distance', value: 100 },
     parts: { cockpit: 1, frame: 3, wing: 6, weight: 1, rotor: 2, bellows: 3 }, newParts: ['bellows'],
     box: { x: 80, y: 28, r: 6 },
     stars: [{ type: 'goal' }, { type: 'maxParts', value: 5 }, { type: 'box' }],
@@ -243,11 +198,11 @@ const CRAFT_FLIGHT = {
   qMax: 2.2,             // 빨라져도 날개 힘은 이 배수까지만
   dragK: 0.12,           // 공기 저항 세기
   cl0: 1.0,              // 기울기 0도일 때 날개 힘
-  clSlope: 0.05,         // 1도 들릴 때마다 늘어나는 날개 힘
+  clSlope: 0.02,         // 1도 들릴 때마다 늘어나는 날개 힘
   clMin: -0.4,
   stallAlpha: 12,        // 이보다 고개를 들면 날개 힘이 줄어듦
   stallDrop: 0.07, clStall: 0.3,
-  alphaDrag: 0.25,       // 고개를 들거나 숙일수록 늘어나는 저항
+  alphaDrag: 0.4,        // 고개를 들거나 숙일수록 늘어나는 저항
   // 기울기(무게중심과 양력 중심)
   balanceK: 400,         // 무게중심이 1칸 어긋날 때 기우는 힘
   vaneK: 40,             // 나는 방향으로 고개를 맞추는 힘
@@ -311,12 +266,6 @@ const FEEDBACK = {
   rotorFly: '회전날개 덕분에 제자리에서 둥실 떠올랐어!',
   bellowsFly: '풀무 바람으로 쌩 날아갔어!',
   glide: '균형이 딱 맞아서 바람을 타고 멀리 미끄러졌어!',
-  // 예전 3가지 고르기(도전 모드 연결 전까지 사용)
-  ballastBack: '무게추가 뒤에 있으니까 비거가 뒤로 뒤집혔어! 가운데로 옮겨 볼까?',
-  ironBody: '쇠는 너무 무거워서 날개가 들어 올리지 못했어. 가벼운 재료로 바꿔 볼까?',
-  ballastFront: '앞이 무거워서 비거가 고개를 숙이고 내려갔어.',
-  smallWing: '날개가 작아서 공기를 많이 받지 못했어. 더 큰 날개는 어떨까?',
-  balanced: '균형이 딱 맞아서 바람을 타고 멀리 날았어!',
 };
 
 // ----- 퀴즈(correct: true가 정답, 보기 순서는 게임에서 섞입니다) -----
@@ -419,12 +368,6 @@ const TEXT = {
   next: '다음',
   bestExtra: '아요가 신나서 땡초라도 먹은 것 같아!', // 결과가 "최고 기록!"일 때 더 나오는 하모 대사
   resultNote: '비거의 진짜 모습은 아무도 몰라. 오늘 네가 만든 비거도 하나의 복원 아이디어야!',
-  buildHello: '부품을 고르면 비거 모양이 바뀌어!',
-  buildRetry: '이번엔 뭘 바꿔 볼까?',
-  wingLabel: '날개',
-  bodyLabel: '몸통',
-  ballastLabel: '무게추 위치',
-  fly: '날려보기!',
   go: '출발!',
   retry: '부품 바꿔서 다시 날리기',
   toQuiz: '퀴즈 풀기',
@@ -475,18 +418,12 @@ const AYO_SIZE = {
 // =============================================================
 // 도전 모드: 진주성 60초
 // =============================================================
-const BAG_SIZE = 5;           // 가방 칸 수
+const BAG_SIZE = 8;           // 가방 칸 수(조종석은 따로 늘 줌)
 const TIME_LIMIT = 60;        // 부품 모으기 제한 시간(초)
 const SEARCH_TAPS = 5;        // 숨김 장소를 뒤지려고 누르는 횟수
 const SEARCH_TAPS_PER_SECOND = 4; // 시간 검사에서 가정하는 연타 빠르기
 const TALK_TIME = 2;          // 마을 사람과 이야기하는 시간(초)
 
-// 부품 상태와 끈이 비행에 주는 영향
-const STATE_EFFECT = {
-  crackedBambooLift: 0.85, // 금 간 대나무: 들어 올리는 힘 배율(비행 중 흔들림)
-  tornPaperValue: 0.5,     // 찢어진 한지: 날개 크기 계산에서 세는 개수
-  noStringLift: 0.85,      // 끈이 없을 때: 들어 올리는 힘 배율
-};
 
 const CHALLENGE = {
   walkSpeed: 119,        // 아요 걷는 속도(화면 1920 기준 초당 픽셀)
@@ -495,8 +432,8 @@ const CHALLENGE = {
   ayoRadius: 28,         // 벽·건물에 부딪히는 아요 크기(픽셀)
   warnSeconds: 10,       // 남은 시간이 이 아래면 타이머가 빨개짐
   timeUpSeconds: 2.6,    // "시간 끝!" 안내를 보여 주는 시간(초)
-  wingNeedPaper: { small: 1, normal: 2, big: 3 }, // 날개별 필요한 한지 수
-  defaultBallast: 'front', // 조립 화면의 첫 무게추 위치
+  goodWings: 4,          // 한지 날개가 이보다 적게 모으고 실패하면 "더 모아 봐" 안내
+  level1MinWings: 2,     // 1단계에 반드시 들어 있는 한지 날개 수(이것만으로도 성공)
   start: { x: 960, y: 465 }, // 아요 출발 위치
   walkArea: { x: 105, y: 145, w: 1710, h: 640 }, // 성벽 안쪽, 걸어 다닐 수 있는 곳
   gridCell: 20,          // 길찾기 칸 크기(픽셀)
@@ -556,19 +493,20 @@ const HIDE_SPOTS = [
   { id: 'smithy-box',     area: 'smithy',    kind: 'box',    x: 1760, y: 595, sx: 1685, sy: 595 },
 ];
 
-// 부품: name = 이름, short = 가방 칸 이름, use = 용도(body 몸통 / wing 날개 / string 끈)
-// heavy = 무거워서 느려짐, hintRank = 힌트로 알려 주는 순서(작을수록 먼저)
+// 숨김 장소에서 나오는 물건: name = 이름, short = 가방 칸 이름, part = 조립 부품(PARTS의 이름)
+// use: trap 교환용(조립에 못 씀) / record 옛 책 조각, good = 반짝 표시, heavy = 무거워서 걸음이 느려짐
+// hintRank = 마을 사람이 먼저 알려 주는 순서(작을수록 먼저)
 const ITEMS = {
-  bamboo:        { name: '튼튼한 대나무', short: '대나무',    use: 'body', bodyKey: 'bamboo', good: true, hintRank: 1 },
-  crackedBamboo: { name: '금 간 대나무',  short: '금 대나무', use: 'body', bodyKey: 'bamboo', cracked: true, hintRank: 3 },
-  wood:          { name: '나무판',        short: '나무판',    use: 'body', bodyKey: 'wood', hintRank: 2 },
-  iron:          { name: '쇠',            short: '쇠',        use: 'body', bodyKey: 'iron', heavy: true, hintRank: 3 },
-  paper:         { name: '깨끗한 한지',   short: '한지',      use: 'wing', good: true, hintRank: 1 },
-  tornPaper:     { name: '찢어진 한지',   short: '찢긴 한지', use: 'wing', torn: true, hintRank: 3 },
-  string:        { name: '튼튼한 끈',     short: '끈',        use: 'string', good: true, hintRank: 1 },
-  jar:           { name: '작은 항아리',   short: '항아리',    use: 'trap', hintRank: 3 }, // 비거에는 못 쓰고 교환에 씀
-  pot:           { name: '솥',            short: '솥',        use: 'trap', hintRank: 3 },
-  record:        { name: '옛 책 조각',    short: '옛 책',     use: 'record', hintRank: 2 },
+  wing:    { name: '한지 날개', short: '날개',   part: 'wing',    good: true, hintRank: 1 },
+  frame:   { name: '대나무 틀', short: '대나무', part: 'frame',   hintRank: 2 },
+  tail:    { name: '연 꼬리',   short: '꼬리',   part: 'tail',    good: true, hintRank: 1 },
+  rotor:   { name: '회전날개',  short: '회전',   part: 'rotor',   hintRank: 2 },
+  bellows: { name: '풀무',      short: '풀무',   part: 'bellows', good: true, heavy: true, hintRank: 1 },
+  wheel:   { name: '수레바퀴',  short: '바퀴',   part: 'wheel',   heavy: true, hintRank: 3 },
+  weight:  { name: '무게추',    short: '무게추', part: 'weight',  heavy: true, hintRank: 3 },
+  jar:     { name: '작은 항아리', short: '항아리', use: 'trap', hintRank: 3 }, // 비거에는 못 쓰고 교환에 씀
+  pot:     { name: '솥',        short: '솥',     use: 'trap', heavy: true, hintRank: 3 },
+  record:  { name: '옛 책 조각', short: '옛 책', use: 'record', hintRank: 2 },
 };
 
 // 옛 기록 카드: 숨김 장소에서 옛 책 조각을 찾으면 아직 안 모은 것 중 하나가 나옵니다.
@@ -614,7 +552,7 @@ const CHALLENGE_STORY = {
   intro: [
     { hamo: 'challengeBook', text: '옛 책에는 비거로 성 밖과 소식을 주고받았다는 이야기가 전해져.' },
     { hamo: 'challengeStart', text: '성 밖에 소식을 전해야 해! 60초 안에 부품을 모아서 비거를 만들자!' },
-    { hamo: 'challengeBag', text: '가방에는 5개까지만 담을 수 있어. 잘 골라야 해!' },
+    { hamo: 'challengeBag', text: '가방에는 8개까지만 담을 수 있어. 모은 부품으로 비거를 조립할 거야!' },
   ],
   startButton: '시작!',
   doneButton: '다 모았어!',
@@ -630,14 +568,6 @@ const CHALLENGE_STORY = {
   noParts: '부품이 모자라… 다시 모아 볼까?',
   retry: '다시 도전',
   retryFull: '다시 도전(60초부터)',
-  buildHello: '모은 부품으로 비거를 만들어 보자!',
-  noString: '끈이 없어서 날개가 흔들려요',
-  crackedNote: '금 간 대나무는 흔들려요',
-  tornNote: '찢어진 한지는 반 개로 쳐요',
-  crackedTag: '금 감',
-  wingLabelCount: '날개 (한지 {n}개)',
-  needPaper: '한지 {n}개',
-  noMaterial: '없음',
   successTitle: '성공!',
   success: '소식 전달 성공!',
   goalReached: '목표 {goal}m 도착!',
@@ -647,21 +577,17 @@ const CHALLENGE_STORY = {
 // 도전 모드 실패 시 하모의 한 마디(규칙은 game.js의 challengeFeedbackKey, 먼저 맞는 것 하나)
 // 어느 것도 맞지 않으면 기존 FEEDBACK만 나옵니다.
 const CHALLENGE_FEEDBACK = {
-  jarHeld: '항아리를 할머니께 드렸으면 한지로 바꿔 주셨을 거야!',
-  potHeld: '솥을 대장장이 아저씨께 드렸으면 끈으로 바꿔 주셨을 거야!',
-  ironNoBamboo: '대나무를 못 가져와서 무거운 쇠로 만들었네. 다음엔 대나무를 먼저 찾아보자!',
-  crackedBamboo: '대나무에 금이 가 있어서 비거가 흔들렸어. 튼튼한 걸 골라 보자!',
-  tornPaper: '찢어진 한지는 바람이 새어 나가. 깨끗한 한지를 찾아보자!',
+  jarHeld: '항아리를 할머니께 드렸으면 한지 날개로 바꿔 주셨을 거야!',
+  potHeld: '솥을 대장장이 아저씨께 드렸으면 풀무로 바꿔 주셨을 거야!',
   manyEmpty: '마을 사람들한테 물어보면 어디에 있는지 알려 줄 거야!',
-  littlePaper: '한지가 더 있었으면 날개를 크게 만들 수 있었어!',
-  noString: '끈이 없어서 날개가 흔들렸어. 다음엔 끈을 꼭 찾아보자!',
+  littleWing: '한지 날개를 더 모았으면 더 멀리 날 수 있었어!',
 };
 
 // =============================================================
-// 조종: 당겨서 쏘기, 배 두드리기, 상승 기류
+// 조종: 당겨서 쏘기(풀무·회전날개 조작 수치는 CRAFT_FLIGHT)
 // =============================================================
 const CONTROL = {
-  optAngle: 30,        // 가장 멀리 가는 발사 각도(도). 이 각도·최대 세기가 자동 발사와 같은 결과
+  optAngle: 30,        // 왼쪽 수평으로 끝까지 당겼을 때의 발사 각도(도)
   minAngle: 10, maxAngle: 60,
   angleMarks: [15, 30, 45], // 발사대 눈금
   tooHigh: 50, tooLow: 15,  // 결과 화면에서 "너무 높이·낮게" 안내하는 각도
@@ -673,53 +599,43 @@ const CONTROL = {
   powerBands: [{ upTo: 0.8, color: '#e0b400' }, { upTo: 0.9, color: '#f28c38' }, { upTo: 1, color: '#d8362f' }],
   startAngle: 30, startPower: 0.85, // 키보드로 조종할 때 처음 값
   keyAngleStep: 2, keyPowerStep: 0.05,
-  highSpeedLoss: 0.5,  // 최적 각도보다 30도 높을 때 줄어드는 앞 속도 비율
-  riseRate: 0.12,      // 각도 1도당 출발 위아래 속도(m/초)
-  angleSink: 0.55,     // 각도가 30도 벗어날 때 빨라지는 하강 비율
-  powerSink: 0.3,      // 세기가 최대에서 1만큼 모자랄 때 빨라지는 하강 비율
   previewShare: 1 / 2, // 예상 궤적을 보여 주는 앞부분 비율
   idleHintSeconds: 5,  // 조작이 없으면 안내하는 시간(초)
-  drum: {
-    lift: 1.75,        // 두드릴 때 떠오르는 속도(m/초)
-    push: 0.5,         // 두드릴 때 빨라지는 앞 속도(m/초)
-    fallingScale: 1,   // 내려가는 중에 쓴 효과
-    risingScale: 0.6,  // 올라가는 중에 쓴 효과
-    bodyEffect: { bamboo: 1, wood: 0.75, iron: 0.08 }, // 몸통별 효과(무거울수록 작음)
-  },
-  // 상승 기류: 거리(m) 구간, power = 떠오르는 힘. 판마다 같은 위치(쉬운 모드 자동 비행에는 없음)
-  thermals: [{ from: 22, to: 33, power: 3 }],
 };
 
 // =============================================================
-// 도전 모드 단계. 기능을 여기서 켜고 끕니다.
+// 도전 모드 단계. 기능을 여기서 켜고 끕니다. 모은 부품이 그대로 조립 화면의 부품 상자가 됩니다.
 // =============================================================
-// spots: HIDE_SPOTS의 id, loot: 내용물(개수 합 = 장소 수), empty 꽝, record 옛 책 조각
-// states: 금 간·찢어진 부품 있음, hintVillager: 힌트 주는 마을 사람 id(null 없음), trades: 물물교환
-// events: [최소, 최대] 돌발 이벤트 수, launch: 'auto' 자동 / 'pull' 당겨서 쏘기, drums: 배 두드리기 횟수
-// needString: 끈이 없을 때 벌칙 적용, icons: 카드에 보여 줄 새 요소
+// spots: HIDE_SPOTS의 id, hintVillager: 힌트 주는 마을 사람 id(null 없음), trades: 물물교환
+// events: [최소, 최대] 돌발 이벤트 수, launch: 'auto' 자동 발사 / 'pull' 당겨서 쏘기, icons: 카드에 보여 줄 새 요소
 const CHALLENGE_LEVELS = [
   {
-    id: 1, name: '1단계', goal: 90,
+    id: 1, name: '1단계', goal: 70,
     spots: ['forest-straw', 'storage-straw', 'storage-box', 'carpenter-box', 'paper-box', 'yard-crock', 'yard-jar', 'smithy-jar'], // 가운데 가까운 곳만
-    loot: [{ item: 'bamboo', count: 1 }, { item: 'wood', count: 1 }, { item: 'paper', count: 4 }, { item: 'empty', count: 2 }],
-    states: false, hintVillager: null, trades: false, events: [0, 0], launch: 'auto', drums: 0, needString: false,
+    hintVillager: null, trades: false, events: [0, 0], launch: 'auto',
     icons: [{ draw: 'spot', text: '부품 찾기' }],
   },
   {
-    id: 2, name: '2단계', goal: 100,
+    id: 2, name: '2단계', goal: 85,
     spots: ['forest-basket', 'forest-straw', 'storage-box', 'carpenter-box', 'carpenter-basket', 'paper-basket', 'yard-crock', 'yard-jar', 'smithy-box'],
-    loot: [{ item: 'bamboo', count: 1 }, { item: 'crackedBamboo', count: 1 }, { item: 'wood', count: 1 }, { item: 'paper', count: 3 }, { item: 'tornPaper', count: 1 }, { item: 'string', count: 1 }, { item: 'record', count: 1 }],
-    states: true, hintVillager: 'v2', trades: false, events: [0, 0], launch: 'pull', drums: 0, needString: true,
-    icons: [{ draw: 'cracked', text: '금 간 부품' }, { draw: 'villager', text: '마을 사람' }, { draw: 'pull', text: '당겨서 쏘기' }],
+    hintVillager: 'v2', trades: false, events: [0, 0], launch: 'pull',
+    icons: [{ draw: 'villager', text: '마을 사람' }, { draw: 'pull', text: '당겨서 쏘기' }, { draw: 'tail', text: '연 꼬리' }],
   },
   {
-    id: 3, name: '3단계', goal: 110,
+    id: 3, name: '3단계', goal: 105,
     spots: HIDE_SPOTS.map(s => s.id),
-    loot: [{ item: 'bamboo', count: 1 }, { item: 'crackedBamboo', count: 1 }, { item: 'iron', count: 1 }, { item: 'paper', count: 3 }, { item: 'tornPaper', count: 1 }, { item: 'string', count: 1 }, { item: 'jar', count: 1 }, { item: 'pot', count: 1 }, { item: 'record', count: 1 }, { item: 'empty', count: 1 }],
-    states: true, hintVillager: 'v2', trades: true, events: [1, 2], launch: 'pull', drums: 3, needString: true,
-    icons: [{ draw: 'trade', text: '물물교환' }, { draw: 'chicken', text: '돌발 사건' }, { draw: 'drum', text: '배 두드리기' }],
+    hintVillager: 'v2', trades: true, events: [1, 2], launch: 'pull',
+    icons: [{ draw: 'trade', text: '물물교환' }, { draw: 'chicken', text: '돌발 사건' }, { draw: 'bellows', text: '풀무' }],
   },
 ];
+
+// 단계별 숨김 장소 내용물(개수 합 = 그 단계 spots 수). item은 ITEMS의 이름, empty 꽝
+// 1단계는 한지 날개가 CHALLENGE.level1MinWings장 이상 들어 있어야 함(그것만으로도 날 수 있음)
+const LOOT_TABLE = {
+  1: [{ item: 'wing', count: 4 }, { item: 'frame', count: 1 }, { item: 'tail', count: 1 }, { item: 'empty', count: 2 }],
+  2: [{ item: 'wing', count: 3 }, { item: 'frame', count: 1 }, { item: 'tail', count: 1 }, { item: 'rotor', count: 1 }, { item: 'weight', count: 1 }, { item: 'record', count: 1 }, { item: 'empty', count: 1 }],
+  3: [{ item: 'wing', count: 3 }, { item: 'frame', count: 1 }, { item: 'tail', count: 1 }, { item: 'bellows', count: 1 }, { item: 'wheel', count: 1 }, { item: 'rotor', count: 1 }, { item: 'jar', count: 1 }, { item: 'pot', count: 1 }, { item: 'record', count: 1 }, { item: 'empty', count: 1 }],
+};
 
 const STAGE_TEXT = {
   title: '단계를 골라 봐!',
@@ -736,8 +652,8 @@ const STAGE_TEXT = {
 
 // 물물교환(3단계): villager = VILLAGERS의 id
 const TRADES = [
-  { villager: 'v1', who: '할머니', want: 'jar', give: 'paper', ask: '항아리가 있으면 바꿔 줄게.' },
-  { villager: 'v3', who: '대장장이 아저씨', want: 'pot', give: 'string', ask: '솥이 있으면 바꿔 줄게.' },
+  { villager: 'v1', who: '할머니', want: 'jar', give: 'wing', ask: '항아리가 있으면 바꿔 줄게.' },
+  { villager: 'v3', who: '대장장이 아저씨', want: 'pot', give: 'bellows', ask: '솥이 있으면 바꿔 줄게.' },
 ];
 const TRADE_THANKS = '고마워! 대신 이거 줄게.';
 
@@ -748,11 +664,11 @@ const EVENTS = {
   noticeSeconds: 2.2,  // 하모 한 줄 알림 시간
   paper: {
     seconds: 3, startText: '한지가 날아가! 잡아!', missText: '앗, 한지가 강에 빠졌어!', tapRadius: 110,
-    reward: 'paper',
+    reward: 'wing',
   },
   chicken: {
-    startText: '닭이 끈을 물고 갔어!', speedScale: 1.1, // 아요보다 얼마나 빠른지
-    runSeconds: 6, restSeconds: 1.3, touchRadius: 66, tapRadius: 110, sound: '꼬꼬', reward: 'string',
+    startText: '닭이 연 꼬리를 물고 갔어!', speedScale: 1.1, // 아요보다 얼마나 빠른지
+    runSeconds: 6, restSeconds: 1.3, touchRadius: 66, tapRadius: 110, sound: '꼬꼬', reward: 'tail',
   },
 };
 
@@ -763,12 +679,10 @@ const TUTORIALS = {
   items: {
     search: '톡톡 눌러!',
     bagFull: '칸을 누르면 내려놔!',
-    state: '금 가거나 찢어진 건 약해!',
     villager: '마을 사람에게 물어봐!',
     pull: '뒤로 당겼다 놓아!',
-    drum: '옛 책에는 배를 두드리면 떠올랐대. 눌러 봐!', // 요청 문구 그대로(20자 초과)
     bellows: '꾹 누르면 바람이 나와!',
-    rotor: '화면을 톡톡 두드려 봐!',
+    rotor: '톡톡 두드리면 빙글빙글 돌아!',
     event: '눌러서 잡아!',
     trade: '원하는 물건을 갖다 줘!',
   },
@@ -778,12 +692,9 @@ const TUTORIALS = {
 const CONTROL_TEXT = {
   pullHint: '뒤로 당겼다 놓아!',
   drumPop: '둥!',
-  line: '발사 각도 {angle}° · 두드리기 {drums}번',
   lineNoDrum: '발사 각도 {angle}°',
   tooHigh: '너무 높이 쐈어! 조금 낮게!',
   tooLow: '너무 낮게 쐈어! 조금 위로!',
-  noDrum: '화면을 눌러 배를 두드려 봐!',
-  drumWin: '옛 책 속 비거처럼 날았어!',
   combo: '연속 {n}개!',
   easyControl: '당겨서 쏘기',
   easyAuto: '자동 발사',

@@ -719,3 +719,8 @@ html, body {
 @keyframes star-pop { 50% { transform: scale(1.3) rotate(10deg); } }
 .star-text { font-size: 1.2rem; font-weight: 800; text-align: center; line-height: 1.2; }
 .sp-card .stage-lock span { display: none; }
+
+/* 도전 모드 가방 8칸 */
+.bag-slot { width: 3.9rem; }
+.bag-slot span { font-size: 1.05rem; white-space: nowrap; }
+.bag-slot canvas { width: 2.8rem; height: 2rem; }
