@@ -831,9 +831,20 @@ const currentStage = () => STAGES[game.stage - 1];
 // =============================================================
 const sfx = {
   ctx: null,
+  unlocked: false,
+  // 터치 기기는 pointerup·touchend·click에서만 소리를 켤 수 있다(pointerdown은 안 됨)
   ensure() {
-    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
-    try { const A = window.AudioContext || window.webkitAudioContext; if (A) this.ctx = new A(); } catch (e) { this.ctx = null; }
+    try {
+      if (!this.ctx) { const A = window.AudioContext || window.webkitAudioContext; if (A) this.ctx = new A(); }
+      if (!this.ctx) return;
+      if (this.ctx.state !== 'running') this.ctx.resume();
+      if (!this.unlocked) {
+        // 아무 소리 없는 아주 짧은 소리를 한 번 내서 안드로이드 크롬의 잠금을 푼다
+        const b = this.ctx.createBuffer(1, 1, 22050), s = this.ctx.createBufferSource();
+        s.buffer = b; s.connect(this.ctx.destination); s.start(0);
+        this.unlocked = true;
+      }
+    } catch (e) { /* 소리는 없어도 게임은 계속 */ }
   },
   tone(freq, seconds, type, volume, delay, slideTo) {
     if (!settings.sound || !this.ctx) return;
@@ -2120,7 +2131,9 @@ screens.flight = {
   pointerDown(x, y, e) {
     if (this.phase === 'fly') { this.tapDrum(); return; }
     const ox = px(0), oy = py(CONFIG.flight.launchHeight);
+    if (this.aim.dragging) return; // 이미 한 손가락으로 당기는 중이면 다른 손가락은 무시
     if (Math.hypot(x - ox, y - oy) > 230) return; // 비거 근처를 눌러야 잡힘
+    this.aim.pointerId = e ? e.pointerId : null;
     // 손가락이 화면 밖으로 나가도 놓을 때까지 받는다
     try { if (e) ui.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
     this.aim.dragging = true;
@@ -3334,7 +3347,10 @@ async function boot() {
   window.addEventListener('contextmenu', e => e.preventDefault());
 
   // 처음 누를 때 소리를 켠다. 읽어주는 중에 누르면 멈춘다
-  window.addEventListener('pointerdown', () => { stopSpeaking(); onFirstInput(); }, { passive: true });
+  // 터치 기기에서는 pointerdown이 '사용자 동작'으로 인정되지 않아 소리·음성이 막힌다.
+  // 그래서 손을 뗄 때(pointerup·touchend·click)에 소리를 켜고 기다리던 말풍선을 읽는다.
+  window.addEventListener('pointerdown', () => stopSpeaking(), { passive: true });
+  for (const type of ['pointerup', 'touchend', 'click']) window.addEventListener(type, onFirstInput, { passive: true });
 
   const toLogical = e => {
     const rect = ui.getBoundingClientRect();
@@ -3348,11 +3364,12 @@ async function boot() {
     scr.pointerDown(p.x, p.y, e);
   });
   // 비행 화면: 끌기와 놓기는 손가락이 화면 밖으로 나가도 받는다
-  window.addEventListener('pointermove', e => {
-    if (game.screen === 'flight' && screens.flight.phase === 'aim') { const p = toLogical(e); screens.flight.dragTo(p.x, p.y); }
-  });
-  window.addEventListener('pointerup', () => { if (game.screen === 'flight' && screens.flight.phase === 'aim') screens.flight.pointerUp(); });
-  window.addEventListener('pointercancel', () => { if (game.screen === 'flight' && screens.flight.phase === 'aim') screens.flight.cancelDrag(); });
+  // 당기기를 시작한 손가락만 따라간다(두 번째 손가락을 대었다 떼도 발사되지 않음)
+  const aimFinger = e => game.screen === 'flight' && screens.flight.phase === 'aim' && screens.flight.aim.dragging
+    && (screens.flight.aim.pointerId == null || screens.flight.aim.pointerId === e.pointerId);
+  window.addEventListener('pointermove', e => { if (aimFinger(e)) { const p = toLogical(e); screens.flight.dragTo(p.x, p.y); } });
+  window.addEventListener('pointerup', e => { if (aimFinger(e)) screens.flight.pointerUp(); });
+  window.addEventListener('pointercancel', e => { if (aimFinger(e)) screens.flight.cancelDrag(); });
   // 모으기 화면: PC 방향키, 스페이스바·Enter로 뒤지기
   const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
   window.addEventListener('keydown', e => {
