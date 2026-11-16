@@ -67,6 +67,96 @@ const CONFIG = {
   maxCanvasWidth: 1600, // 저사양 대응: 캔버스 최대 해상도
 };
 
+// =============================================================
+// 칸 조립: 조립 칸, 부품, 비행 수치
+// =============================================================
+const GRID = { cols: 5, rows: 3 }; // 가로 5칸(오른쪽이 앞), 세로 3칸
+
+// 부품 수치(무게 단위는 서로 비교용)
+// code = 조립 예시 글자, weight 무게, drag 공기 저항, lift 뜨는 힘(날개)
+// thrust 미는 힘·gauge 바람 게이지 초(풀무), rotor 위로 뜨는 힘·taps 두드리기 횟수(회전날개)
+// roll 출발 속도 올림(수레바퀴), steady 흔들림 줄임(연 꼬리)
+// intro = 처음 나올 때 하모 소개(한 문장)
+const PARTS = {
+  cockpit: { code: 'C', name: '조종석',    weight: 3.0, drag: 0.35, color: '#c89b6c',
+             intro: '아요가 타는 조종석이야. 꼭 하나 있어야 해!' },
+  frame:   { code: 'F', name: '대나무 틀', weight: 0.4, drag: 0.06, color: '#cfd67a',
+             intro: '대나무 틀은 가벼워서 부품을 이어 붙이기 좋아.' },
+  wing:    { code: 'W', name: '한지 날개', weight: 0.5, drag: 0.2,  lift: 1, color: '#f8ecd2',
+             intro: '한지 날개가 많을수록 잘 뜨지만, 바람도 많이 받아.' },
+  weight:  { code: 'K', name: '무게추',    weight: 1.6, drag: 0.03, color: '#c8553d',
+             intro: '무게추로 앞뒤 무게를 맞춰 봐!' },
+  rotor:   { code: 'R', name: '회전날개',  weight: 0.9, drag: 0.25, rotor: 1, taps: 6, color: '#9bc46a',
+             intro: '대나무 회전날개는 화면을 두드릴수록 빙글빙글 돌아서 위로 떠!' },
+  bellows: { code: 'B', name: '풀무',      weight: 1.2, drag: 0.18, thrust: 1, gauge: 0.6, color: '#a97f52',
+             intro: '풀무 버튼을 누르는 동안 바람이 나와서 앞으로 밀어 줘!' },
+  wheel:   { code: 'H', name: '수레바퀴',  weight: 1.0, drag: 0.1,  roll: 1, color: '#8a5a36',
+             intro: '수레바퀴를 달면 언덕을 더 빨리 굴러 내려가.' },
+  tail:    { code: 'T', name: '연 꼬리',   weight: 0.2, drag: 0.05, steady: 1, color: '#e0795b',
+             intro: '연 꼬리를 달면 덜 흔들려!' },
+};
+// 부품 상자에 놓이는 순서
+const PART_ORDER = ['cockpit', 'frame', 'wing', 'weight', 'rotor', 'bellows', 'wheel', 'tail'];
+
+// 비행 계산 값(단위: m, 초). 바꾼 뒤에는 runAllCombos()로 꼭 확인
+const CRAFT_FLIGHT = {
+  g: 9.8,
+  launchHeight: 45,      // 망진산 출발 높이
+  groundClearance: 3.2,  // 땅에 닿았다고 보는 높이
+  ceiling: 62,           // 화면 위 끝(이보다 높이 못 올라감)
+  worldEnd: 138,         // 화면 오른쪽 끝(여기까지 가면 비행 끝)
+  maxSeconds: 40,        // 이보다 오래 날면 멈춤(무한 비행 방지)
+  playSpeed: 1.15,       // 화면 재생 빠르기(1 = 실제 시간)
+  // 발사
+  launchSpeed: 15,       // 최대로 당겼을 때 출발 속도
+  launchMassRef: 4.5,    // 이 무게보다 가벼우면 더 빨리, 무거우면 더 느리게 출발
+  launchMassPow: 0.5,
+  launchMassMin: 0.6, launchMassMax: 1.2,
+  wheelBoost: 0.3,       // 수레바퀴 하나당 출발 속도 증가
+  wheelMax: 2,           // 수레바퀴 효과가 쌓이는 최대 개수
+  autoAngle: 25,         // 자동 발사 각도
+  // 날개
+  wingLift: 2.0,         // 날개 하나가 버티는 무게
+  wingStack: 0.8,        // 날개를 많이 달수록 덜 늘어나는 정도(1이면 그대로)
+  liftCap: 1.3,          // 날개 힘은 몸무게의 이 배수까지만(크게 솟구치지 않게)
+  vFull: 12,             // 이 속도에서 날개가 제 힘을 냄
+  qMax: 2.2,             // 빨라져도 날개 힘은 이 배수까지만
+  dragK: 0.12,           // 공기 저항 세기
+  cl0: 1.0,              // 기울기 0도일 때 날개 힘
+  clSlope: 0.05,         // 1도 들릴 때마다 늘어나는 날개 힘
+  clMin: -0.4,
+  stallAlpha: 12,        // 이보다 고개를 들면 날개 힘이 줄어듦
+  stallDrop: 0.07, clStall: 0.3,
+  alphaDrag: 0.25,       // 고개를 들거나 숙일수록 늘어나는 저항
+  // 기울기(무게중심과 양력 중심)
+  balanceK: 400,         // 무게중심이 1칸 어긋날 때 기우는 힘
+  vaneK: 40,             // 나는 방향으로 고개를 맞추는 힘
+  vaneMin: 0.25,         // 느릴 때도 남는 최소 힘
+  tailVane: 0.6,         // 연 꼬리 하나당 방향 맞추는 힘 증가
+  dampBase: 5,          // 흔들림이 줄어드는 정도
+  tailDamp: 6,           // 연 꼬리 하나당 흔들림 줄임
+  rotorLevel: 30,        // 회전날개가 많을수록 매달린 것처럼 수평을 유지하는 힘
+  gust: 200,             // 바람결이 흔드는 힘(연 꼬리가 없으면 크게 흔들림)
+  tailGust: 3,           // 연 꼬리 하나당 바람결 흔들림을 줄이는 정도
+  tumbleAlpha: 55,       // 이만큼 어긋나면 곤두박질(뒤집힘)
+  tumbleSpeed: 7,
+  tumbleSpin: 260,       // 곤두박질할 때 도는 빠르기(도/초)
+  crashVy: 16,           // 이보다 빠르게 떨어지며 닿으면 추락
+  crashPitch: 50,        // 이보다 고개를 숙이고 닿으면 추락
+  // 풀무
+  thrust: 5,             // 풀무 하나가 미는 힘(무게 단위)
+  // 회전날개
+  rotorLift: 3.4,        // 회전날개 하나가 다 돌 때 드는 무게
+  rotorTapAdd: 0.55,     // 한 번 두드릴 때 도는 정도(최대 1)
+  rotorDecay: 0.55,      // 도는 힘이 줄어드는 빠르기
+  rotorDrag: 0.9,        // 돌 때 늘어나는 저항(앞으로 느려짐)
+  rotorAuto: 0.5,        // 떨어질 때 회전날개가 낙하산처럼 받쳐 주는 정도
+  // 조립 화면 막대
+  barMax: 14,            // 막대가 꽉 차는 값(무게 단위)
+  offsetWarn: 0.45,      // 무게중심이 이만큼(칸) 어긋나면 "기울어짐" 안내
+  wobbleWarn: 20,        // 흔들림이 이보다 크면 연 꼬리 안내
+};
+
 // ----- 등급 이름 -----
 const GRADE_TEXT = {
   crash: '추락',
@@ -87,6 +177,19 @@ const STORY = {
 
 // ----- 결과 화면 하모 설명(위에서부터 먼저 맞는 것 하나만 나옵니다) -----
 const FEEDBACK = {
+  // 칸 조립 비행(규칙은 game.js의 craftFeedbackKey)
+  noWing: '날개가 없어서 금방 내려왔어. 한지 날개를 달아 볼까?',
+  tooHeavy: '너무 무거워서 날개가 들어 올리지 못했어. 무게를 줄여 볼까?',
+  tailHeavy: '뒤가 너무 무거워서 고개가 들렸어. 무게를 앞으로 옮겨 볼까?',
+  noseHeavy: '앞이 너무 무거워서 고개를 숙이고 내려갔어. 무게를 뒤로 옮겨 볼까?',
+  rotorIdle: '회전날개는 화면을 두드려야 돌아!',
+  bellowsIdle: '풀무 버튼을 눌러야 바람이 나와!',
+  bellowsOut: '풀무 바람이 다 떨어지니까 금방 내려왔어. 날개를 더 달아 볼까?',
+  wobble: '비거가 흔들려서 힘이 빠졌어. 연 꼬리를 달아 볼까?',
+  rotorFly: '회전날개 덕분에 제자리에서 둥실 떠올랐어!',
+  bellowsFly: '풀무 바람으로 쌩 날아갔어!',
+  glide: '균형이 딱 맞아서 바람을 타고 멀리 미끄러졌어!',
+  // 예전 3가지 고르기(도전 모드 연결 전까지 사용)
   ballastBack: '무게추가 뒤에 있으니까 비거가 뒤로 뒤집혔어! 가운데로 옮겨 볼까?',
   ironBody: '쇠는 너무 무거워서 날개가 들어 올리지 못했어. 가벼운 재료로 바꿔 볼까?',
   ballastFront: '앞이 무거워서 비거가 고개를 숙이고 내려갔어.',

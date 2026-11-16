@@ -10,6 +10,351 @@ const SAMPLE_EVERY = 4; // 궤적 저장 간격(스텝)
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+// =============================================================
+// 1-0. 칸 조립과 비행 계산 (화면과 무관, 같은 조립·같은 조작이면 항상 같은 결과)
+// 물리 엔진 없이 조립 결과를 한 덩어리로 합산해서 날린다.
+// =============================================================
+const DEG = Math.PI / 180;
+const PART_BY_CODE = {};
+for (const k of Object.keys(PARTS)) PART_BY_CODE[PARTS[k].code] = k;
+
+function emptyGrid() { return Array.from({ length: GRID.rows }, () => Array(GRID.cols).fill(null)); }
+// ['..W..', 'FCWW.', '..K..'] 같은 글자 줄로 조립을 만든다(. = 빈칸)
+function gridFromRows(rows) {
+  const g = emptyGrid();
+  rows.forEach((line, r) => [...line].forEach((ch, c) => {
+    if (r < GRID.rows && c < GRID.cols) g[r][c] = PART_BY_CODE[ch] || null;
+  }));
+  return g;
+}
+function gridToRows(g) { return g.map(row => row.map(k => (k ? PARTS[k].code : '.')).join('')); }
+function copyGrid(g) { return g.map(row => row.slice()); }
+const cellX = c => c - (GRID.cols - 1) / 2; // 앞(오른쪽)이 +
+const cellY = r => (GRID.rows - 1) / 2 - r; // 위가 +
+
+// 조립을 합산한다. 떨어진 부품(조종석과 이어지지 않은 것)은 계산에서 뺀다
+function analyzeCraft(grid) {
+  const F = CRAFT_FLIGHT, cells = [];
+  for (let r = 0; r < GRID.rows; r++) for (let c = 0; c < GRID.cols; c++) if (grid[r][c]) cells.push({ r, c, key: grid[r][c] });
+  const cockpits = cells.filter(x => x.key === 'cockpit');
+  const linked = new Set();
+  if (cockpits.length) {
+    const todo = [cockpits[0]];
+    linked.add(cockpits[0].r * 10 + cockpits[0].c);
+    while (todo.length) {
+      const { r, c } = todo.pop();
+      for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nr = r + dr, nc = c + dc, id = nr * 10 + nc;
+        if (nr < 0 || nc < 0 || nr >= GRID.rows || nc >= GRID.cols || !grid[nr][nc] || linked.has(id)) continue;
+        linked.add(id);
+        todo.push({ r: nr, c: nc });
+      }
+    }
+  }
+  const detached = cells.filter(x => !linked.has(x.r * 10 + x.c));
+  const s = { mass: 0, lift: 0, up: 0, drag: 0, thrust: 0, gauge: 0, rotor: 0, taps: 0, roll: 0, steady: 0 };
+  let mx = 0, my = 0, lx = 0, ly = 0;
+  const counts = {};
+  for (const x of cells) {
+    if (!linked.has(x.r * 10 + x.c)) continue;
+    const P = PARTS[x.key], X = cellX(x.c), Y = cellY(x.r);
+    counts[x.key] = (counts[x.key] || 0) + 1;
+    s.mass += P.weight; mx += P.weight * X; my += P.weight * Y;
+    // 양력 중심: 날개와 회전날개가 드는 자리의 평균
+    const up = (P.lift || 0) * F.wingLift + (P.rotor || 0) * F.rotorLift;
+    if (P.lift) s.lift += P.lift;
+    if (up) { s.up += up; lx += up * X; ly += up * Y; }
+    for (const k of ['drag', 'thrust', 'gauge', 'rotor', 'taps', 'roll', 'steady']) s[k] += P[k] || 0;
+  }
+  const xcg = s.mass ? mx / s.mass : 0, ycg = s.mass ? my / s.mass : 0;
+  const xcl = s.up ? lx / s.up : xcg, ycl = s.up ? ly / s.up : ycg;
+  const liftForce = wingForce(s.lift), rotorForce = s.rotor * F.rotorLift, pushForce = s.thrust * F.thrust;
+  // 나는 방식: 가장 큰 힘으로 정한다
+  let style = 'none';
+  const best = Math.max(liftForce, rotorForce, pushForce * 1.6);
+  if (best > 0) style = best === liftForce ? 'glide' : best === rotorForce ? 'rotor' : 'bellows';
+  return {
+    ...s, counts, cells, detached, cockpits: cockpits.length,
+    partCount: cells.length - cockpits.length,
+    valid: cockpits.length === 1 && detached.length === 0,
+    xcg, ycg, xcl, ycl,
+    offset: s.up ? xcg - xcl : 0, // + 앞이 무거움, - 뒤가 무거움
+    liftForce, rotorForce, pushForce: pushForce + s.roll * F.wheelBoost * 6,
+    style,
+  };
+}
+
+// 망진산 언덕의 땅 높이(m). 출발점(0m)에서 남강 시작까지 내려간다
+function terrainAt(x) {
+  const F = CRAFT_FLIGHT, top = F.launchHeight - F.groundClearance, foot = CONFIG.world.riverStart;
+  if (x <= 1) return top;
+  if (x >= foot) return 0;
+  const k = (x - 1) / (foot - 1);
+  return top * (1 - k * k * (3 - 2 * k));
+}
+
+// 날개 n장이 버티는 무게: 많이 달수록 조금씩 덜 늘어남
+function wingForce(n) { return n > 0 ? CRAFT_FLIGHT.wingLift * Math.pow(n, CRAFT_FLIGHT.wingStack) : 0; }
+
+function wrapDeg(a) { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; }
+
+function liftCoef(alpha) {
+  const F = CRAFT_FLIGHT, a = Math.abs(alpha), sign = alpha < 0 ? -1 : 1;
+  if (a <= F.stallAlpha) return Math.max(F.clMin, F.cl0 + F.clSlope * alpha);
+  // 고개를 너무 들거나 숙이면 날개 힘이 빠진다
+  if (sign > 0) return Math.max(F.clStall, F.cl0 + F.clSlope * F.stallAlpha - (a - F.stallAlpha) * F.stallDrop);
+  return F.clMin;
+}
+
+function launchSpeedOf(info, power) {
+  const F = CRAFT_FLIGHT;
+  const massK = clamp(Math.pow(F.launchMassRef / Math.max(0.1, info.mass), F.launchMassPow), F.launchMassMin, F.launchMassMax);
+  return F.launchSpeed * power * massK * (1 + F.wheelBoost * Math.min(info.roll, F.wheelMax));
+}
+
+// 비행 시작. angle(도)·power(0~1)는 당겨서 쏘기 결과
+function startFlight(info, angle, power) {
+  const F = CRAFT_FLIGHT, v = launchSpeedOf(info, power);
+  const st = {
+    info, angle, power, x: 0, y: F.launchHeight, vx: v * Math.cos(angle * DEG), vy: v * Math.sin(angle * DEG),
+    theta: angle, omega: 0, t: 0, step: 0, gauge: info.gauge, tapsLeft: info.taps, spin: 0,
+    tapsUsed: 0, blowTime: 0, blowing: false, tumbling: false, done: false, crashed: false, endedBy: '',
+    maxY: F.launchHeight, maxSpeed: v, wobble: 0, wobbleN: 0, minTheta: angle,
+  };
+  st.samples = [{ t: 0, x: st.x, y: st.y, theta: st.theta, spin: 0, blow: false }];
+  return st;
+}
+
+// 화면을 두드림: 회전날개를 돌린다. 돌렸으면 true
+function tapRotor(st) {
+  if (st.done || st.info.rotor <= 0 || st.tapsLeft <= 0) return false;
+  st.tapsLeft--;
+  st.tapsUsed++;
+  st.spin = Math.min(1, st.spin + CRAFT_FLIGHT.rotorTapAdd);
+  return true;
+}
+
+// 한 걸음 계산. blowing = 풀무 버튼을 누르고 있음
+function stepFlight(st, blowing, dt) {
+  if (st.done) return;
+  const F = CRAFT_FLIGHT, I = st.info;
+  const v2 = st.vx * st.vx + st.vy * st.vy, v = Math.sqrt(v2);
+  const gamma = Math.atan2(st.vy, st.vx) / DEG;
+  const alpha = wrapDeg(st.theta - gamma);
+  const q = Math.min(v2 / (F.vFull * F.vFull), F.qMax);
+  let ax = 0, ay = -F.g;
+  // 날개: 진행 방향에 수직으로 들어 올림
+  const cl = !st.tumbling && I.lift > 0 ? liftCoef(alpha) : 0;
+  // 날개 힘은 속도에 비례하되 너무 빨라도 몸무게의 liftCap배까지만(크게 솟구치지 않게)
+  const liftAcc = Math.min(F.g * (wingForce(I.lift) / I.mass) * cl * Math.min(v / F.vFull, F.qMax), F.g * F.liftCap);
+  const aClamp = clamp(alpha, -30, 30) / 10;
+  const dragArea = I.drag + F.alphaDrag * I.lift * aClamp * aClamp + F.rotorDrag * I.rotor * st.spin + (st.tumbling ? 0.6 : 0);
+  const dragAcc = F.dragK * dragArea * v2 / I.mass;
+  if (v > 0.01) {
+    const ux = st.vx / v, uy = st.vy / v;
+    ax += -dragAcc * ux - liftAcc * uy;
+    ay += -dragAcc * uy + liftAcc * ux;
+  }
+  // 풀무: 누르는 동안 바라보는 방향으로 민다
+  st.blowing = !!blowing && st.gauge > 0 && I.thrust > 0;
+  if (st.blowing) {
+    // 날개가 없으면 바람이 헛돌아 절반만 민다
+    const T = F.g * I.thrust * F.thrust / I.mass * (0.5 + 0.5 * Math.min(1, I.liftForce / I.mass));
+    ax += T * Math.cos(st.theta * DEG);
+    ay += T * Math.sin(st.theta * DEG);
+    st.gauge = Math.max(0, st.gauge - dt);
+    st.blowTime += dt;
+  }
+  // 회전날개: 돌수록 위로, 떨어질 때는 낙하산처럼 받쳐 줌
+  if (I.rotor > 0) {
+    ay += F.g * (I.rotor * F.rotorLift / I.mass) * st.spin;
+    if (st.vy < 0) ay += F.rotorAuto * I.rotor * st.vy * st.vy / I.mass;
+    st.spin *= Math.exp(-F.rotorDecay * dt);
+    if (st.spin < 0.01) st.spin = 0;
+  }
+  // 기울기: 무게중심이 양력 중심보다 앞이면 고개를 숙이고, 뒤면 고개를 든다
+  if (st.tumbling) {
+    st.omega = (st.omega < 0 ? -1 : 1) * F.tumbleSpin;
+  } else {
+    const vane = F.vaneK * (1 + F.tailVane * I.steady) * Math.max(F.vaneMin, q);
+    const rotorAcc = I.rotor * F.rotorLift * st.spin / I.mass;
+    // 회전날개 비중이 클수록 매달린 것처럼 수평을 유지(떠 있을 때 고개가 처박히지 않게)
+    const hang = I.rotor > 0 ? F.rotorLevel * I.rotorForce / (I.rotorForce + I.liftForce) : 0;
+    // 바람결: 늘 조금씩 흔드는 힘. 연 꼬리가 있으면 덜 흔들린다
+    const gust = F.gust * (Math.sin(st.t * 2.3) + 0.6 * Math.sin(st.t * 5.1 + 1)) / (1 + F.tailGust * I.steady);
+    const torque = -F.balanceK * I.offset * Math.min(1.5, liftAcc / F.g + rotorAcc)
+      + vane * wrapDeg(gamma - st.theta) - hang * st.theta + gust
+      - (F.dampBase + F.tailDamp * I.steady) * st.omega;
+    st.omega += torque * dt;
+    if (I.lift > 0 && Math.abs(alpha) > F.tumbleAlpha && v > F.tumbleSpeed && I.rotor === 0) {
+      st.tumbling = true;
+      st.omega = (alpha > 0 ? 1 : -1) * F.tumbleSpin;
+    }
+  }
+  st.theta = wrapDeg(st.theta + st.omega * dt);
+  st.vx += ax * dt; st.vy += ay * dt;
+  st.x += st.vx * dt; st.y += st.vy * dt;
+  st.t += dt; st.step++;
+  if (st.y > F.ceiling) { st.y = F.ceiling; st.vy = Math.min(st.vy, 0); }
+  if (st.x < -12) { st.x = -12; st.vx = Math.max(0, st.vx); }
+  st.maxY = Math.max(st.maxY, st.y);
+  st.maxSpeed = Math.max(st.maxSpeed, v);
+  st.minTheta = Math.min(st.minTheta, st.theta);
+  // 흔들림: 출발 직후 고개를 맞추는 동안은 빼고, 고개가 위아래로 오락가락한 정도
+  if (st.t > 1.5 && st.t < 9) { st.wobble += Math.abs(st.omega); st.wobbleN++; }
+
+  const ground = terrainAt(st.x) + F.groundClearance;
+  if (![st.x, st.y, st.vx, st.vy, st.theta].every(Number.isFinite)) { st.done = true; st.endedBy = 'error'; st.crashed = true; }
+  else if (st.y <= ground && st.t > 0.15) {
+    st.y = ground; st.done = true; st.endedBy = 'ground';
+    st.crashed = st.tumbling || st.vy < -F.crashVy || (st.theta < -F.crashPitch && st.vy < -F.crashVy * 0.5);
+  } else if (st.x >= F.worldEnd) { st.x = F.worldEnd; st.done = true; st.endedBy = 'edge'; }
+  else if (st.t >= F.maxSeconds) { st.done = true; st.endedBy = 'timeout'; }
+  if (st.done || st.step % SAMPLE_EVERY === 0) st.samples.push({ t: st.t, x: st.x, y: st.y, theta: st.theta, spin: st.spin, blow: st.blowing });
+}
+
+// 비행 결과 정리
+function flightSummary(st, allowed) {
+  const w = CONFIG.world, distance = Math.max(0, Math.round(st.x));
+  const wobble = st.wobbleN ? st.wobble / st.wobbleN : 0;
+  const s = {
+    distance, crashed: st.crashed, endedBy: st.endedBy, maxHeight: Math.round(st.maxY),
+    simSeconds: st.t, maxSpeed: st.maxSpeed, wobble, tapsUsed: st.tapsUsed, blowTime: st.blowTime,
+    inRiver: st.x >= w.riverStart && st.x < w.riverEnd, angle: Math.round(st.angle), samples: st.samples,
+    style: st.info.style,
+  };
+  s.grade = gradeOf(distance, st.crashed);
+  s.feedback = craftFeedbackKey(st.info, s, allowed);
+  return s;
+}
+
+// 결과 화면 하모 설명: 위에서 먼저 맞는 것 하나
+// allowed: 이번에 쓸 수 있는 부품 목록(없으면 전부). 못 쓰는 부품을 권하지 않는다
+function craftFeedbackKey(info, s, allowed) {
+  const F = CRAFT_FLIGHT;
+  if (info.lift === 0 && info.rotor === 0) return 'noWing';
+  if (info.rotor > 0 && s.tapsUsed === 0 && info.liftForce < info.mass) return 'rotorIdle';
+  if (info.thrust > 0 && s.blowTime === 0 && info.liftForce < info.mass) return 'bellowsIdle';
+  if (info.liftForce * F.qMax * F.cl0 < info.mass && info.rotorForce < info.mass) return info.lift ? 'tooHeavy' : 'noWing';
+  if (info.offset < -F.offsetWarn) return 'tailHeavy';
+  if (info.offset > F.offsetWarn) return 'noseHeavy';
+  if (info.style === 'rotor') return s.tapsUsed > 0 ? 'rotorFly' : 'rotorIdle';
+  if (info.style === 'bellows') return s.blowTime > 0 ? (s.distance < CONFIG.grades.goodFrom ? 'bellowsOut' : 'bellowsFly') : 'bellowsIdle';
+  if (info.steady === 0 && s.wobble > F.wobbleWarn && (!allowed || allowed.includes('tail'))) return 'wobble';
+  return 'glide';
+}
+
+// 자동 조작으로 끝까지 날린다(검사용): 풀무는 처음부터 다 쓰고, 회전날개는 tapEvery초마다 두드림
+function simulateCraft(grid, opt = {}) {
+  const info = analyzeCraft(grid);
+  const st = startFlight(info, opt.angle === undefined ? CRAFT_FLIGHT.autoAngle : opt.angle, opt.power === undefined ? 1 : opt.power);
+  const tapEvery = opt.tapEvery === undefined ? 0.9 : opt.tapEvery;
+  let nextTap = opt.tapFrom === undefined ? 0.3 : opt.tapFrom;
+  while (!st.done) {
+    if (tapEvery > 0 && st.t >= nextTap) { tapRotor(st); nextTap += tapEvery; }
+    const blow = opt.blow === undefined ? st.t > 0.2 : opt.blow(st.t);
+    stepFlight(st, blow, SIM_STEP);
+  }
+  return { info, st, ...flightSummary(st) };
+}
+
+// 검사용 대표 조립(오른쪽이 앞). C 조종석 F 대나무 틀 W 한지 날개 K 무게추 R 회전날개 B 풀무 H 수레바퀴 T 연 꼬리
+const TEST_CRAFTS = {
+  '날개 2장':        ['..W..', '.FC..', '..W..'],
+  '날개 3장':        ['.WWW.', '.FCF.', '.....'],
+  '날개 4장':        ['.WW..', '.FCF.', '.WW..'],
+  '날개 6장+꼬리':   ['.WWW.', 'TFCF.', '.WWW.'],
+  '날개 6장':        ['.WWW.', '.FCF.', '.WWW.'],
+  '날개 8장+꼬리':   ['WWWW.', 'TFCF.', 'WWWW.'],
+  '날개 4장+바퀴':   ['.WWW.', '.FCF.', '.H.H.'],
+  '뒤가 무거움':     ['..WW.', 'KFC..', '.....'],
+  '앞이 무거움':     ['.WW..', '..CFK', '.....'],
+  '무게추로 균형':   ['.WW..', 'KFCFK', '.WW..'],
+  '날개 없음':       ['.....', '.FCF.', '.....'],
+  '너무 무거움':     ['.W...', 'KKCKK', '.....'],
+  '조종석만':        ['.....', '..C..', '.....'],
+  '회전날개 2개':    ['.RR..', '.FCW.', '.....'],
+  '회전날개 3개':    ['.RRR.', '.FCF.', '.....'],
+  '회전날개+날개':   ['.RR..', 'WFCW.', '.WW..'],
+  '풀무 2개':        ['..W..', 'BFCB.', '..W..'],
+  '풀무 3개':        ['.B...', 'BBCW.', '..W..'],
+  '풀무+날개 4장':   ['.WW..', 'BFCB.', '.WW..'],
+  '풀무만':          ['.....', 'BBCB.', '.....'],
+  '전부 조금씩':     ['.RWW.', 'TFCFB', '.HWW.'],
+  '꽉 채움':         ['WWWWW', 'TFCBH', 'WWRWW'],
+  '세로로 길게':     ['..W..', '..C..', '..W..'],
+};
+
+// 대표 조립 자동 비행 검사 — 브라우저 콘솔에서 runAllCombos() 실행
+// NaN, 무한 비행, 화면 밖 이탈, 매번 다른 결과, 나는 방식 구분, 무게중심 원리를 확인한다
+function runAllCombos() {
+  const F = CRAFT_FLIGHT, rows = [], problems = [], res = {};
+  const inBounds = r => r.samples.every(s => Number.isFinite(s.x) && Number.isFinite(s.y) && s.x >= -12 && s.x <= F.worldEnd + 0.01 && s.y >= -0.01 && s.y <= F.ceiling + 0.01);
+  const check = (name, r) => {
+    if (r.endedBy === 'error') problems.push(`${name}: 계산이 숫자가 아님(NaN)`);
+    if (r.endedBy === 'timeout') problems.push(`${name}: ${F.maxSeconds}초가 넘도록 내려오지 않음(무한 비행)`);
+    if (!inBounds(r)) problems.push(`${name}: 화면 밖으로 나감`);
+  };
+  for (const [name, rowsG] of Object.entries(TEST_CRAFTS)) {
+    const g = gridFromRows(rowsG), a = simulateCraft(g), b = simulateCraft(g);
+    res[name] = a;
+    check(name, a);
+    if (a.distance !== b.distance || a.samples.length !== b.samples.length) problems.push(`${name}: 결과가 매번 다름`);
+    if (!a.info.valid) problems.push(`${name}: 조립이 올바르지 않음`);
+    // 여러 발사 각도·세기, 조작 없음도 안전한지
+    for (const angle of [CONTROL.minAngle, 25, 45, CONTROL.maxAngle]) for (const power of [CONTROL.minPower, 1]) {
+      check(`${name}(${angle}°, ${power})`, simulateCraft(g, { angle, power }));
+    }
+    check(`${name}(조작 없음)`, simulateCraft(g, { tapEvery: 0, blow: () => false }));
+    check(`${name}(계속 두드림)`, simulateCraft(g, { tapEvery: 0.1 }));
+    rows.push({
+      조립: name, 방식: a.info.style, '거리(m)': a.distance, '최고 높이(m)': a.maxHeight,
+      '최고 속도': +a.maxSpeed.toFixed(1), '비행(초)': +a.simSeconds.toFixed(1), 흔들림: +a.wobble.toFixed(0),
+      결과: a.crashed ? '추락' : a.inRiver ? '남강' : '착지', '하모 설명': a.feedback,
+    });
+  }
+  // 무작위 조립 300개도 안전한지
+  const rng = createRng(20261116), keys = Object.keys(PARTS).filter(k => k !== 'cockpit');
+  for (let i = 0; i < 300; i++) {
+    const g = emptyGrid();
+    g[Math.floor(rng() * GRID.rows)][Math.floor(rng() * GRID.cols)] = 'cockpit';
+    for (let r = 0; r < GRID.rows; r++) for (let c = 0; c < GRID.cols; c++) if (!g[r][c] && rng() < 0.6) g[r][c] = keys[Math.floor(rng() * keys.length)];
+    if (!analyzeCraft(g).valid) continue;
+    check(`무작위 ${gridToRows(g).join('/')}`, simulateCraft(g, { angle: 10 + rng() * 50, power: 0.7 + rng() * 0.3 }));
+  }
+
+  // 나는 방식 구분: 날개형 = 가장 멀리, 회전날개형 = 가장 높이·가장 천천히, 풀무형 = 가장 빠르게·금방 떨어짐
+  const glide = res['날개 6장+꼬리'], rotor = res['회전날개 3개'], bellows = res['풀무 2개'];
+  const avgSpeed = r => r.distance / r.simSeconds;
+  if (!(glide.distance > rotor.distance && glide.distance > bellows.distance)) problems.push('날개형이 가장 멀리 가지 않음');
+  if (!(rotor.maxHeight > glide.maxHeight && rotor.maxHeight > bellows.maxHeight)) problems.push('회전날개형이 가장 높이 뜨지 않음');
+  if (!(avgSpeed(rotor) < avgSpeed(glide) && avgSpeed(rotor) < avgSpeed(bellows))) problems.push('회전날개형이 가장 천천히 가지 않음');
+  if (!(bellows.maxSpeed > glide.maxSpeed * 1.3 && bellows.maxSpeed > rotor.maxSpeed * 1.3)) problems.push('풀무형이 눈에 띄게 빠르지 않음');
+  if (!(bellows.simSeconds < glide.simSeconds)) problems.push('풀무형이 날개형보다 오래 낢(금방 떨어져야 함)');
+  if (glide.info.style !== 'glide' || rotor.info.style !== 'rotor' || bellows.info.style !== 'bellows') problems.push('나는 방식 분류가 틀림');
+  const styles = [['날개형', glide], ['회전날개형', rotor], ['풀무형', bellows]].map(([k, r]) => ({
+    방식: k, '거리(m)': r.distance, '최고 높이(m)': r.maxHeight, '평균 속도': +avgSpeed(r).toFixed(1), '최고 속도': +r.maxSpeed.toFixed(1), '비행(초)': +r.simSeconds.toFixed(1),
+  }));
+
+  // 무게중심 원리
+  const bal = res['날개 4장'];
+  if (!(res['뒤가 무거움'].distance < bal.distance * 0.8)) problems.push('뒤가 무거워도 멀리 감');
+  if (!(res['앞이 무거움'].distance < bal.distance * 0.8)) problems.push('앞이 무거워도 멀리 감');
+  if (res['뒤가 무거움'].feedback !== 'tailHeavy' || res['앞이 무거움'].feedback !== 'noseHeavy') problems.push('무게중심 하모 설명이 틀림');
+  if (!(res['날개 6장+꼬리'].distance > res['날개 6장'].distance)) problems.push('연 꼬리가 도움이 안 됨');
+  if (!(res['날개 6장'].wobble > res['날개 6장+꼬리'].wobble)) problems.push('연 꼬리가 흔들림을 줄이지 않음');
+  if (!(res['날개 4장+바퀴'].distance > res['날개 3장'].distance)) problems.push('수레바퀴가 출발을 돕지 않음');
+  if (!(res['날개 없음'].distance < CONFIG.world.riverEnd) || res['날개 없음'].feedback !== 'noWing') problems.push('날개 없이도 남강을 건넘');
+  if (res['너무 무거움'].feedback !== 'tooHeavy') problems.push('너무 무거운 조립 설명이 틀림');
+  if (!(res['날개 2장'].distance > CONFIG.world.riverEnd)) problems.push('날개 2장으로 남강을 못 건넘(너무 어려움)');
+
+  console.table(rows);
+  console.table(styles);
+  if (problems.length) console.warn('문제 ' + problems.length + '건:\n' + problems.join('\n'));
+  else console.log(`대표 조립 ${rows.length}종 검사 통과`);
+  return { rows, styles, problems };
+}
+
 // 부품 조합 하나를 끝까지 계산해서 궤적과 결과를 돌려준다
 // liftScale: 들어 올리는 힘 배율(도전 모드에서 끈이 없을 때 사용, 쉬운 모드는 1)
 // ctl(없으면 자동 비행): { angle, power 발사 각도·세기, drums 두드린 시간 목록, thermal 상승 기류 사용 }
@@ -116,8 +461,8 @@ function feedbackKey(wingKey, bodyKey, ballastKey) {
   return 'balanced';
 }
 
-// 27가지 조합 검사 — 브라우저 콘솔에서 runAllCombos() 실행
-function runAllCombos() {
+// 예전 3가지 고르기 27조합 검사(도전 모드 연결 전까지 남겨 둠) — runLegacyCombos()
+function runLegacyCombos() {
   const rows = [], problems = [];
   for (const wing of Object.keys(CONFIG.wings))
     for (const body of Object.keys(CONFIG.bodies))
