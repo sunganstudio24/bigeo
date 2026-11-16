@@ -88,7 +88,7 @@ const PARTS = {
              intro: '무게추로 앞뒤 무게를 맞춰 봐!' },
   rotor:   { code: 'R', name: '회전날개',  weight: 0.9, drag: 0.25, rotor: 1, taps: 6, color: '#9bc46a',
              intro: '대나무 회전날개는 화면을 두드릴수록 빙글빙글 돌아서 위로 떠!' },
-  bellows: { code: 'B', name: '풀무',      weight: 1.2, drag: 0.18, thrust: 1, gauge: 0.6, color: '#a97f52',
+  bellows: { code: 'B', name: '풀무',      weight: 1.2, drag: 0.18, thrust: 1, gauge: 1.2, color: '#a97f52',
              intro: '풀무 버튼을 누르는 동안 바람이 나와서 앞으로 밀어 줘!' },
   wheel:   { code: 'H', name: '수레바퀴',  weight: 1.0, drag: 0.1,  roll: 1, color: '#8a5a36',
              intro: '수레바퀴를 달면 언덕을 더 빨리 굴러 내려가.' },
@@ -98,11 +98,48 @@ const PARTS = {
 // 부품 상자에 놓이는 순서
 const PART_ORDER = ['cockpit', 'frame', 'wing', 'weight', 'rotor', 'bellows', 'wheel', 'tail'];
 
+// 조립 화면 문구(하모 말풍선은 위에서부터 먼저 맞는 것 하나)
+const BUILD_TEXT = {
+  hello: '아래 부품을 칸에 끌어다 놓아 봐!',
+  needCockpit: '아요가 탈 조종석을 놓아 줘!',
+  detached: '떨어진 부품이 있어! 조종석에 붙여 줘.',
+  noLift: '날개가 없으면 금방 떨어져.',
+  tooHeavy: '너무 무거워! 날개를 더 달거나 무게를 줄여 봐.',
+  tailHeavy: '뒤가 무거워! 고개가 들릴 거야.',
+  noseHeavy: '앞이 무거워! 고개를 숙일 거야.',
+  ready: '좋아! 날려 보자!',
+  pickFirst: '아래에서 부품을 먼저 골라 줘.',
+  usedUp: '그 부품은 다 썼어.',
+  locked: '이 짐은 옮길 수 없어.',
+  recommend: '아요 추천',
+  clear: '비우기',
+  fly: '날려보기!',
+  barWeight: '무게',
+  barLift: '뜨는 힘',
+  barPush: '미는 힘',
+  front: '앞',
+  back: '뒤',
+  cannotFly: '아직 못 날아',
+};
+// 나는 방식 이름(결과 표)
+const STYLE_TEXT = { glide: '날개', rotor: '회전날개', bellows: '풀무', none: '없음' };
+
+// 비행 화면 문구
+const FLIGHT_TEXT = {
+  bellows: '꾹 누르기',
+  bellowsHint: '풀무를 꾹 눌러!',
+  rotorHint: '화면을 톡톡!',
+  starBox: '별 상자!',
+};
+
+// 부품 제한이 없을 때 '아요 추천' 조립(오른쪽이 앞, 글자는 PARTS의 code, . = 빈칸)
+const FREE_RECOMMEND = ['.WWW.', 'TFCF.', '.WWW.'];
+
 // 비행 계산 값(단위: m, 초). 바꾼 뒤에는 runAllCombos()로 꼭 확인
 const CRAFT_FLIGHT = {
   g: 9.8,
   launchHeight: 45,      // 망진산 출발 높이
-  groundClearance: 3.2,  // 땅에 닿았다고 보는 높이
+  groundClearance: 4.6,  // 땅에 닿았다고 보는 높이
   ceiling: 62,           // 화면 위 끝(이보다 높이 못 올라감)
   worldEnd: 138,         // 화면 오른쪽 끝(여기까지 가면 비행 끝)
   maxSeconds: 40,        // 이보다 오래 날면 멈춤(무한 비행 방지)
@@ -144,7 +181,7 @@ const CRAFT_FLIGHT = {
   crashVy: 16,           // 이보다 빠르게 떨어지며 닿으면 추락
   crashPitch: 50,        // 이보다 고개를 숙이고 닿으면 추락
   // 풀무
-  thrust: 5,             // 풀무 하나가 미는 힘(무게 단위)
+  thrust: 2.8,           // 풀무 하나가 미는 힘(무게 단위)
   // 회전날개
   rotorLift: 3.4,        // 회전날개 하나가 다 돌 때 드는 무게
   rotorTapAdd: 0.55,     // 한 번 두드릴 때 도는 정도(최대 1)
@@ -153,6 +190,7 @@ const CRAFT_FLIGHT = {
   rotorAuto: 0.5,        // 떨어질 때 회전날개가 낙하산처럼 받쳐 주는 정도
   // 조립 화면 막대
   barMax: 14,            // 막대가 꽉 차는 값(무게 단위)
+  liftBarScale: 1.4,     // 뜨는 힘 막대 배율(무게 막대보다 길면 초록색 = 날 수 있음)
   offsetWarn: 0.45,      // 무게중심이 이만큼(칸) 어긋나면 "기울어짐" 안내
   wobbleWarn: 20,        // 흔들림이 이보다 크면 연 꼬리 안내
 };
@@ -644,6 +682,8 @@ const TUTORIALS = {
     villager: '마을 사람에게 물어봐!',
     pull: '뒤로 당겼다 놓아!',
     drum: '옛 책에는 배를 두드리면 떠올랐대. 눌러 봐!', // 요청 문구 그대로(20자 초과)
+    bellows: '꾹 누르면 바람이 나와!',
+    rotor: '화면을 톡톡 두드려 봐!',
     event: '눌러서 잡아!',
     trade: '원하는 물건을 갖다 줘!',
   },

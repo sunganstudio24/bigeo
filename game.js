@@ -1078,7 +1078,7 @@ function loadTop(mode) {
 function saveTop(flight, mode) {
   if (flight.crashed) return;
   const list = loadTop(mode);
-  const combo = `${flight.wing}/${flight.body}/${flight.ballast}/${flight.liftScale}/${flight.distance}`;
+  const combo = flight.combo || `${flight.wing}/${flight.body}/${flight.ballast}/${flight.liftScale}/${flight.distance}`;
   if (list.some(r => r.combo === combo)) return;
   list.push({ combo, distance: flight.distance });
   list.sort((a, b) => b.distance - a.distance);
@@ -1132,7 +1132,7 @@ function unlockNext(stageId) {
 
 // 결과 화면의 조종 안내(설계 문제가 없을 때만). 해당 없으면 null
 function controlFeedbackKey(flight, stage, success) {
-  if (flight.feedback !== 'balanced') return null;
+  if (flight.feedback !== 'balanced' && flight.feedback !== 'glide') return null;
   if (flight.angle !== null && flight.angle >= CONTROL.tooHigh) return 'tooHigh';
   if (flight.angle !== null && flight.angle <= CONTROL.tooLow) return 'tooLow';
   if (stage && stage.drums > 0 && flight.drumsUsed === 0) return 'noDrum';
@@ -1667,6 +1667,133 @@ function drawBigeo(c, pick, x, y, scale, pitchDeg, flap) {
   c.restore();
 }
 
+// ----- 칸 조립 부품 그림: 원점이 칸 가운데, s = 칸 크기 -----
+// opt.spin 회전날개 각도, opt.blow 풀무 바람, opt.roll 바퀴 각도, opt.wave 꼬리 물결
+function drawPart(c, key, s, opt = {}) {
+  const k = s / 100;
+  c.save();
+  c.scale(k, k);
+  c.lineJoin = 'round';
+  if (key === 'cockpit') {
+    // 아요가 앉은 나무 조종석
+    if (images.ayo) {
+      const img = images.ayo, h = 92, w = img.width * h / img.height, srcH = img.height * 0.62;
+      c.drawImage(img, 0, 0, img.width, srcH, 2 - w / 2, 4 - srcH * h / img.height, w, srcH * h / img.height);
+    } else { c.save(); c.translate(2, -20); drawAyoShape(c, 22); c.restore(); }
+    c.beginPath(); c.moveTo(-46, 0); c.lineTo(48, 0); c.quadraticCurveTo(44, 40, 20, 42); c.lineTo(-24, 42); c.quadraticCurveTo(-44, 40, -46, 0); c.closePath();
+    fillStroke(c, C.wood, 5);
+    c.strokeStyle = C.woodDark; c.lineWidth = 4;
+    c.beginPath(); c.moveTo(-38, 16); c.lineTo(40, 16); c.moveTo(-30, 30); c.lineTo(32, 30); c.stroke();
+  } else if (key === 'frame') {
+    // 대나무 틀: 네모 + 대각선, 마디
+    c.lineCap = 'round';
+    const stick = (x0, y0, x1, y1, w) => {
+      c.strokeStyle = C.ink; c.lineWidth = w + 6; c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+      c.strokeStyle = C.bamboo; c.lineWidth = w; c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+    };
+    stick(-38, -38, 38, 38, 7); stick(38, -38, -38, 38, 7);
+    stick(-40, -40, 40, -40, 10); stick(-40, 40, 40, 40, 10); stick(-40, -40, -40, 40, 10); stick(40, -40, 40, 40, 10);
+    c.fillStyle = C.bambooDark;
+    for (const [x, y] of [[0, -40], [0, 40], [-40, 0], [40, 0]]) { c.fillRect(x - 3, y - 7, 6, 14); }
+    c.lineCap = 'butt';
+  } else if (key === 'wing') {
+    // 한지 날개: 살대가 있는 돛 모양
+    c.beginPath(); c.moveTo(-48, 30); c.lineTo(-44, -26); c.quadraticCurveTo(0, -48, 48, -30); c.lineTo(44, 26); c.quadraticCurveTo(0, 14, -48, 30); c.closePath();
+    fillStroke(c, C.wing, 5);
+    c.strokeStyle = C.woodDark; c.lineWidth = 4; c.lineCap = 'round';
+    c.beginPath(); for (const x of [-22, 2, 26]) { c.moveTo(x, -36 + Math.abs(x) * 0.12); c.lineTo(x, 22 - Math.abs(x) * 0.1); } c.stroke();
+    c.beginPath(); c.moveTo(-44, -2); c.quadraticCurveTo(0, -18, 46, -4); c.stroke();
+    c.lineCap = 'butt';
+  } else if (key === 'weight') {
+    c.strokeStyle = C.ink; c.lineWidth = 5;
+    c.beginPath(); c.moveTo(0, -44); c.lineTo(0, -16); c.stroke();
+    c.beginPath(); c.moveTo(-34, 6); c.quadraticCurveTo(-36, -22, -6, -22); c.quadraticCurveTo(34, -24, 36, 8); c.quadraticCurveTo(38, 36, 2, 38); c.quadraticCurveTo(-34, 38, -34, 6); c.closePath();
+    fillStroke(c, C.stone, 5);
+    c.fillStyle = 'rgba(255,255,255,0.35)'; c.beginPath(); c.ellipse(-12, -6, 10, 6, -0.5, 0, Math.PI * 2); c.fill();
+  } else if (key === 'rotor') {
+    // 대나무 회전날개(대나무 잠자리)
+    const a = opt.spin || 0, cos = Math.cos(a);
+    c.lineCap = 'round';
+    c.strokeStyle = C.ink; c.lineWidth = 13; c.beginPath(); c.moveTo(0, -18); c.lineTo(0, 44); c.stroke();
+    c.strokeStyle = C.bamboo; c.lineWidth = 7; c.beginPath(); c.moveTo(0, -18); c.lineTo(0, 44); c.stroke();
+    for (const side of [1, -1]) {
+      const len = 44 * Math.abs(cos) + 6;
+      c.beginPath(); c.ellipse(side * cos * 24, -24, len / 2, 9, 0, 0, Math.PI * 2);
+      fillStroke(c, side * cos > 0 ? C.bamboo : C.bambooDark, 4);
+    }
+    circle(c, 0, -24, 7); fillStroke(c, C.woodDark, 3);
+    c.lineCap = 'butt';
+  } else if (key === 'bellows') {
+    // 풀무(바람 주머니): 주름 + 뒤쪽 바람 구멍
+    if (opt.blow) {
+      c.fillStyle = 'rgba(255,255,255,0.85)';
+      const t = (opt.blowT || 0) % 1;
+      for (let i = 0; i < 3; i++) { const d = ((t + i / 3) % 1); circle(c, -56 - d * 40, (i - 1) * 10, 8 + d * 10); c.fill(); }
+    }
+    c.beginPath(); c.moveTo(-52, -6); c.lineTo(-38, -10); c.lineTo(-38, 10); c.lineTo(-52, 6); c.closePath(); fillStroke(c, C.woodDark, 4);
+    c.beginPath(); c.moveTo(-38, -20); c.lineTo(30, -36); c.lineTo(30, 36); c.lineTo(-38, 20); c.closePath(); fillStroke(c, '#b88a5a', 5);
+    c.strokeStyle = C.woodDark; c.lineWidth = 4;
+    c.beginPath(); for (const x of [-20, -2, 16]) { const h = 22 + (x + 38) * 0.21; c.moveTo(x, -h); c.lineTo(x + 6, 0); c.lineTo(x, h); } c.stroke();
+    roundBox(c, 28, -42, 16, 84, 6); fillStroke(c, C.wood, 4);
+  } else if (key === 'wheel') {
+    const a = opt.roll || 0;
+    circle(c, 0, 0, 38); fillStroke(c, '#8a5a36', 5);
+    circle(c, 0, 0, 28); c.fillStyle = C.woodLight; c.fill(); c.lineWidth = 3; c.strokeStyle = C.ink; c.stroke();
+    c.strokeStyle = '#6b4426'; c.lineWidth = 6; c.lineCap = 'round';
+    c.beginPath(); for (let i = 0; i < 6; i++) { const r = a + i * Math.PI / 3; c.moveTo(0, 0); c.lineTo(Math.cos(r) * 27, Math.sin(r) * 27); } c.stroke();
+    circle(c, 0, 0, 9); fillStroke(c, C.woodDark, 3);
+    c.lineCap = 'butt';
+  } else if (key === 'tail') {
+    // 연 꼬리: 물결치는 끈과 리본
+    const w = opt.wave || 0;
+    const yAt = x => Math.sin(x / 16 + w) * 10 * (40 - x) / 80;
+    c.lineCap = 'round';
+    c.strokeStyle = C.ink; c.lineWidth = 9; c.beginPath(); for (let x = 46; x >= -48; x -= 6) { if (x === 46) c.moveTo(x, yAt(x)); else c.lineTo(x, yAt(x)); } c.stroke();
+    c.strokeStyle = '#f4cc3c'; c.lineWidth = 4; c.stroke();
+    for (const x of [22, -6, -34]) {
+      const y = yAt(x);
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x - 12, y - 14); c.lineTo(x - 12, y + 14); c.closePath(); fillStroke(c, '#e0795b', 3);
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x + 12, y - 14); c.lineTo(x + 12, y + 14); c.closePath(); fillStroke(c, '#e0795b', 3);
+    }
+    c.lineCap = 'butt';
+  }
+  c.restore();
+}
+
+// 조립한 탈것 전체: (x, y) = 무게중심 위치, s = 칸 크기, pitch = 기울기(도, 고개 듦이 +)
+function drawCraft(c, grid, x, y, s, pitch, opt = {}) {
+  const info = opt.info || analyzeCraft(grid);
+  c.save();
+  c.translate(x, y);
+  c.rotate(-(pitch || 0) * Math.PI / 180);
+  const ox = -info.xcg * s, oy = info.ycg * s;
+  const at = (r, cc) => [ox + cellX(cc) * s, oy - cellY(r) * s];
+  // 이웃한 부품을 잇는 대나무 막대
+  c.lineCap = 'round';
+  for (let pass = 0; pass < 2; pass++) {
+    c.strokeStyle = pass ? C.bamboo : C.ink; c.lineWidth = s * (pass ? 0.07 : 0.12);
+    c.beginPath();
+    for (let r = 0; r < GRID.rows; r++) for (let cc = 0; cc < GRID.cols; cc++) {
+      if (!grid[r][cc]) continue;
+      const [x0, y0] = at(r, cc);
+      if (cc + 1 < GRID.cols && grid[r][cc + 1]) { const [x1, y1] = at(r, cc + 1); c.moveTo(x0, y0); c.lineTo(x1, y1); }
+      if (r + 1 < GRID.rows && grid[r + 1][cc]) { const [x1, y1] = at(r + 1, cc); c.moveTo(x0, y0); c.lineTo(x1, y1); }
+    }
+    c.stroke();
+  }
+  c.lineCap = 'butt';
+  // 조종석(아요)은 맨 위에 그린다
+  for (const front of [false, true]) {
+    for (let r = 0; r < GRID.rows; r++) for (let cc = 0; cc < GRID.cols; cc++) {
+      const key = grid[r][cc];
+      if (!key || (key === 'cockpit') !== front) continue;
+      const [px0, py0] = at(r, cc);
+      c.save(); c.translate(px0, py0); drawPart(c, key, s, opt); c.restore();
+    }
+  }
+  c.restore();
+}
+
 // ----- 배경 그림 (한 번만 그려 두고 복사) -----
 function paperCloud(c, x, y, s) {
   c.fillStyle = C.cloud;
@@ -2067,7 +2194,7 @@ function go(name, arg) {
   lastSpoken = '';
   ui.replaceChildren();
   // 비행 화면에서는 터치 끌기가 스크롤로 끊기지 않게 한다
-  document.getElementById('stage').classList.toggle('flying', name === 'flight');
+  document.getElementById('stage').classList.toggle('flying', name === 'flight' || name === 'legacyFlight' || name === 'build');
   ui.className = '';
   screens[name].enter(arg);
   if (name !== 'title' && game.screen === name) ui.append(homeButton());
@@ -2101,6 +2228,7 @@ function switchMode(mode) {
   game.goodbye = false;
   if (mode === 'challenge') { startChallenge(); return; }
   game.pick = { ...CONFIG.defaults };
+  game.grid = null; game.buildRules = null; game.stageDef = null; game.autoLaunch = false;
   game.isRetry = false;
   go('build');
 }
@@ -2109,6 +2237,7 @@ function switchMode(mode) {
 function newSession() {
   game.history = [];
   game.pick = { ...CONFIG.defaults };
+  game.grid = null; game.buildRules = null; game.stageDef = null; game.autoLaunch = false;
   game.isRetry = false;
   game.mode = 'easy';
   game.parts = null;
@@ -2227,7 +2356,8 @@ screens.title = {
   draw(now) {
     drawBg();
     const bob = Math.sin(now / 600) * 10;
-    drawBigeo(ctx, game.pick, 1010, 588 + bob, 1, 4, Math.sin(now / 250) * 0.5 + 0.5);
+    if (!this.craft) this.craft = gridFromRows(FREE_RECOMMEND);
+    drawCraft(ctx, this.craft, 1010, 588 + bob, 84, 4, { wave: now / 200 });
     drawHamo(ctx, 'title', 240, 595, 400, 470);
   },
   animated: true,
@@ -2358,7 +2488,7 @@ function partGroup(label, slot, table, drawFn, locked, tagOf) {
       game.pick[slot] = key;
       row.querySelectorAll('.card').forEach(b => b.setAttribute('aria-pressed', String(b === card)));
       game.dirty = true;
-      screens.build.refreshNotes();
+      screens.legacyBuild.refreshNotes();
     });
     row.append(card);
   }
@@ -2366,7 +2496,7 @@ function partGroup(label, slot, table, drawFn, locked, tagOf) {
   return group;
 }
 
-screens.build = {
+screens.legacyBuild = {
   enter() {
     setBg('build');
     const panel = el('div', 'build-panel');
@@ -2388,11 +2518,11 @@ screens.build = {
     this.note = el('div', 'state-note');
     ui.append(this.note, this.bubble);
     this.refreshNotes();
-    ui.append(button('primary big fly-btn', TEXT.fly, () => go('flight'), 'plane'));
+    ui.append(button('primary big fly-btn', TEXT.fly, () => go('legacyFlight'), 'plane'));
   },
   // 고른 부품에 따라 안내를 바꾼다: 첫 안내는 하모 말풍선, 나머지는 회색 칸
   refreshNotes() {
-    if (game.screen !== 'build') return;
+    if (game.screen !== 'legacyBuild') return;
     const S = CHALLENGE_STORY;
     if (game.mode !== 'challenge') {
       this.bubble.textContent = game.isRetry ? TEXT.buildRetry : TEXT.buildHello;
@@ -2417,10 +2547,576 @@ screens.build = {
   },
 };
 
-// ----- flight -----
+// ----- build: 5×3 칸 조립 -----
+const CELL = 168, GRID_X = 360, GRID_Y = 120; // 조립 칸 크기와 위치(화면 1920×1080 기준)
+const rem = v => v / 40 + 'rem';
+
+// 이번 조립의 규칙: allowed 쓸 수 있는 부품, limits 부품별 개수(없으면 무제한),
+// locked 옮길 수 없는 부품 [{ r, c, key }], recommend '아요 추천' 조립
+function buildRules() {
+  return game.buildRules || { allowed: PART_ORDER.slice(), limits: { cockpit: 1 }, locked: [], recommend: FREE_RECOMMEND };
+}
+const limitOf = (rules, key) => (rules.limits[key] === undefined ? Infinity : rules.limits[key]);
+const isLocked = (rules, r, c) => rules.locked.some(l => l.r === r && l.c === c);
+function usedOf(grid, rules, key) {
+  let n = 0;
+  for (let r = 0; r < GRID.rows; r++) for (let c = 0; c < GRID.cols; c++) if (grid[r][c] === key && !isLocked(rules, r, c)) n++;
+  return n;
+}
+// 옮길 수 없는 부품을 제자리에 두고, 개수를 넘는 부품은 뺀다
+function fitGrid(grid, rules) {
+  const g = copyGrid(grid);
+  for (let r = 0; r < GRID.rows; r++) for (let c = 0; c < GRID.cols; c++) if (g[r][c] && !rules.allowed.includes(g[r][c]) && !isLocked(rules, r, c)) g[r][c] = null;
+  for (const l of rules.locked) g[l.r][l.c] = l.key;
+  for (const key of PART_ORDER) {
+    let extra = usedOf(g, rules, key) - limitOf(rules, key);
+    for (let r = GRID.rows - 1; r >= 0 && extra > 0; r--) for (let c = 0; c < GRID.cols && extra > 0; c++) {
+      if (g[r][c] === key && !isLocked(rules, r, c)) { g[r][c] = null; extra--; }
+    }
+  }
+  return g;
+}
+function freshGrid(rules) {
+  const g = emptyGrid();
+  if (!isLocked(rules, 1, 2)) g[1][2] = 'cockpit'; // 조종석은 처음부터 가운데에
+  return fitGrid(g, rules);
+}
+
+// 조립 화면 하모 안내
+function buildHintKey(info) {
+  const F = CRAFT_FLIGHT;
+  if (info.cockpits === 0) return 'needCockpit';
+  if (info.detached.length) return 'detached';
+  if (info.up === 0) return 'noLift';
+  if (info.liftForce * F.qMax * F.cl0 < info.mass && info.rotorForce < info.mass) return 'tooHeavy';
+  if (info.offset < -F.offsetWarn) return 'tailHeavy';
+  if (info.offset > F.offsetWarn) return 'noseHeavy';
+  return 'ready';
+}
+
+screens.build = {
+  enter() {
+    setBg('build');
+    const R = this.rules = buildRules(), T = BUILD_TEXT;
+    game.grid = game.grid ? fitGrid(game.grid, R) : freshGrid(R);
+    this.selected = null;
+    this.drag = null;
+    this.flashText = '';
+    clearTimeout(this.flashTimer);
+
+    const gridEl = this.gridEl = el('div', 'craft-grid');
+    Object.assign(gridEl.style, { left: rem(GRID_X), top: rem(GRID_Y), width: rem(CELL * GRID.cols), height: rem(CELL * GRID.rows) });
+    this.cells = [];
+    for (let r = 0; r < GRID.rows; r++) for (let c = 0; c < GRID.cols; c++) {
+      const cell = el('div', 'cell'), pic = el('canvas');
+      pic.width = pic.height = 168;
+      cell.dataset.r = r; cell.dataset.c = c;
+      cell.append(pic);
+      cell.pic = pic;
+      gridEl.append(cell);
+      this.cells.push(cell);
+    }
+    gridEl.append(el('span', 'grid-label back', '◀ ' + T.back), el('span', 'grid-label front', T.front + ' ▶'));
+    this.clDot = el('div', 'cl-dot');
+    this.cgDot = el('div', 'cg-dot');
+    gridEl.append(this.clDot, this.cgDot);
+    ui.append(gridEl);
+
+    // 무게·뜨는 힘·미는 힘 막대
+    const bars = el('div', 'sheet abs bars');
+    this.bar = {};
+    for (const [key, label] of [['weight', T.barWeight], ['lift', T.barLift], ['push', T.barPush]]) {
+      const row = el('div', 'bar-row'), track = el('div', 'bar-track'), fill = el('div', 'bar-fill ' + key);
+      track.append(fill);
+      if (key === 'lift') { this.liftMark = el('div', 'bar-mark'); track.append(this.liftMark); }
+      row.append(el('span', 'bar-label', label), track);
+      bars.append(row);
+      this.bar[key] = fill;
+    }
+    ui.append(bars);
+    ui.append(button('recommend-btn', T.recommend, () => this.recommend(), 'star'));
+    ui.append(button('clear-btn', T.clear, () => this.clear(), 'retry'));
+    this.flyBtn = button('primary big cb-fly', T.fly, () => this.fly(), 'plane');
+    ui.append(this.flyBtn);
+
+    // 부품 상자
+    const tray = this.tray = el('div', 'part-tray');
+    for (const key of R.allowed) {
+      const item = el('div', 'tray-item'), pic = el('canvas');
+      pic.width = pic.height = 136;
+      const c = pic.getContext('2d');
+      c.translate(68, 68);
+      drawPart(c, key, 112, { spin: 0.5 });
+      item.dataset.key = key;
+      item.append(pic, el('span', 'name', PARTS[key].name), el('span', 'count'));
+      tray.append(item);
+    }
+    ui.append(tray);
+    this.bubble = el('div', 'bubble cb-bubble');
+    ui.append(this.bubble);
+
+    gridEl.addEventListener('pointerdown', e => this.down(e, e.target.closest('.cell')));
+    tray.addEventListener('pointerdown', e => this.down(e, e.target.closest('.tray-item')));
+    this.refresh();
+  },
+
+  available(key) { return limitOf(this.rules, key) - usedOf(game.grid, this.rules, key); },
+  say(text) {
+    this.flashText = text;
+    clearTimeout(this.flashTimer);
+    this.flashTimer = setTimeout(() => { this.flashText = ''; if (game.screen === 'build') this.refresh(); }, 2200);
+  },
+
+  // ----- 끌어다 놓기 / 탭→탭 -----
+  down(e, target) {
+    if (!target || this.drag || game.tut) return;
+    const fromCell = target.classList.contains('cell');
+    const r = fromCell ? +target.dataset.r : -1, c = fromCell ? +target.dataset.c : -1;
+    const key = fromCell ? game.grid[r][c] : target.dataset.key;
+    this.drag = { id: e.pointerId, fromCell, r, c, key, target, x0: e.clientX, y0: e.clientY, moved: false };
+    try { target.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+  },
+  canDrag(d) {
+    if (!d.key) return false;
+    if (d.fromCell) return !isLocked(this.rules, d.r, d.c);
+    return this.available(d.key) > 0 || d.key === 'cockpit';
+  },
+  onMove(e, p) {
+    const d = this.drag;
+    if (!d || d.id !== e.pointerId) return;
+    if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) > 12 && this.canDrag(d)) {
+      d.moved = true;
+      const g = this.ghost = el('canvas', 'drag-ghost');
+      g.width = g.height = 168;
+      const c = g.getContext('2d'); c.translate(84, 84); drawPart(c, d.key, 150, { spin: 0.5 });
+      ui.append(g);
+    }
+    if (!d.moved) return;
+    this.ghost.style.left = rem(p.x - 80);
+    this.ghost.style.top = rem(p.y - 80);
+    const over = this.cellAt(e.clientX, e.clientY);
+    this.cells.forEach(cell => cell.classList.toggle('hover', cell === over));
+  },
+  onUp(e) {
+    const d = this.drag;
+    if (!d || d.id !== e.pointerId) return;
+    this.endDrag();
+    if (d.moved) {
+      const cell = this.cellAt(e.clientX, e.clientY);
+      if (d.fromCell) {
+        if (cell) this.move(d.r, d.c, +cell.dataset.r, +cell.dataset.c);
+        else this.removeAt(d.r, d.c);
+      } else if (cell) this.place(d.key, +cell.dataset.r, +cell.dataset.c);
+    } else if (d.fromCell) this.tapCell(d.r, d.c);
+    else this.tapTray(d.key);
+    this.refresh();
+  },
+  onCancel(e) { if (this.drag && this.drag.id === e.pointerId) { this.endDrag(); this.refresh(); } },
+  endDrag() {
+    this.drag = null;
+    if (this.ghost) { this.ghost.remove(); this.ghost = null; }
+    this.cells.forEach(cell => cell.classList.remove('hover'));
+  },
+  cellAt(x, y) {
+    const n = document.elementFromPoint(x, y);
+    return n && n.closest ? n.closest('.craft-grid .cell') : null;
+  },
+  tapTray(key) {
+    if (this.available(key) <= 0 && key !== 'cockpit') { this.say(BUILD_TEXT.usedUp); sfx.play('empty'); return; }
+    this.selected = this.selected === key ? null : key;
+    sfx.play('tap');
+    if (this.selected && !game.tutSeen.has('part:' + key) && PARTS[key].intro) { game.tutSeen.add('part:' + key); this.say(PARTS[key].intro); }
+  },
+  tapCell(r, c) {
+    const key = game.grid[r][c];
+    if (isLocked(this.rules, r, c)) { this.say(BUILD_TEXT.locked); sfx.play('empty'); return; }
+    if (this.selected && this.selected !== key) { this.place(this.selected, r, c); return; }
+    if (key) { this.removeAt(r, c); return; }
+    this.say(BUILD_TEXT.pickFirst);
+    this.tray.classList.remove('flash'); void this.tray.offsetWidth; this.tray.classList.add('flash');
+  },
+  place(key, r, c) {
+    const g = game.grid;
+    if (isLocked(this.rules, r, c)) { this.say(BUILD_TEXT.locked); sfx.play('empty'); return; }
+    if (g[r][c] === key) return;
+    if (this.available(key) <= 0) {
+      // 조종석은 하나뿐이라 새 자리로 옮긴다
+      if (key !== 'cockpit') { this.say(BUILD_TEXT.usedUp); sfx.play('empty'); return; }
+      for (let rr = 0; rr < GRID.rows; rr++) for (let cc = 0; cc < GRID.cols; cc++) if (g[rr][cc] === 'cockpit' && !isLocked(this.rules, rr, cc)) g[rr][cc] = null;
+    }
+    g[r][c] = key;
+    sfx.play('found');
+    if (this.selected && this.available(this.selected) <= 0) this.selected = null;
+  },
+  move(r0, c0, r1, c1) {
+    if (r0 === r1 && c0 === c1) return;
+    if (isLocked(this.rules, r1, c1)) { this.say(BUILD_TEXT.locked); sfx.play('empty'); return; }
+    const g = game.grid, t = g[r1][c1];
+    g[r1][c1] = g[r0][c0];
+    g[r0][c0] = t;
+    sfx.play('found');
+  },
+  removeAt(r, c) {
+    if (isLocked(this.rules, r, c)) { this.say(BUILD_TEXT.locked); return; }
+    game.grid[r][c] = null;
+    sfx.play('tap');
+  },
+  recommend() { game.grid = fitGrid(gridFromRows(this.rules.recommend), this.rules); this.selected = null; this.say(BUILD_TEXT.ready); this.refresh(); },
+  clear() { game.grid = freshGrid(this.rules); this.selected = null; this.refresh(); },
+  fly() {
+    if (!this.info.valid) {
+      sfx.play('empty');
+      this.flyBtn.classList.remove('shake'); void this.flyBtn.offsetWidth; this.flyBtn.classList.add('shake');
+      this.say(BUILD_TEXT[buildHintKey(this.info)]);
+      this.refresh();
+      return;
+    }
+    go('flight');
+  },
+
+  // 칸 그림, 막대, 무게중심 점, 하모 안내를 다시 그린다
+  refresh() {
+    if (game.screen !== 'build') return;
+    const F = CRAFT_FLIGHT, R = this.rules, g = game.grid, info = this.info = analyzeCraft(g);
+    const loose = new Set(info.detached.map(x => x.r * 10 + x.c));
+    for (const cell of this.cells) {
+      const r = +cell.dataset.r, c = +cell.dataset.c, key = g[r][c], pc = cell.pic.getContext('2d');
+      pc.setTransform(1, 0, 0, 1, 0, 0);
+      pc.clearRect(0, 0, 168, 168);
+      if (key) { pc.translate(84, 84); drawPart(pc, key, 150, { spin: 0.5 }); }
+      cell.classList.toggle('filled', !!key);
+      cell.classList.toggle('locked', isLocked(R, r, c));
+      cell.classList.toggle('loose', loose.has(r * 10 + c));
+    }
+    this.gridEl.classList.toggle('picking', !!this.selected);
+    for (const item of this.tray.children) {
+      const key = item.dataset.key, left = this.available(key);
+      item.classList.toggle('selected', this.selected === key);
+      item.classList.toggle('empty', left <= 0 && key !== 'cockpit');
+      item.querySelector('.count').textContent = Number.isFinite(left) ? String(Math.max(0, left)) : '';
+      item.querySelector('.count').hidden = !Number.isFinite(limitOf(R, key)) || key === 'cockpit';
+    }
+    // 막대: 숫자 대신 길이와 색
+    const pct = v => clamp(v / F.barMax, 0, 1) * 100 + '%';
+    const liftBar = (info.liftForce + info.rotorForce) * F.liftBarScale;
+    this.bar.weight.style.width = pct(info.mass);
+    this.bar.lift.style.width = pct(liftBar);
+    this.bar.lift.classList.toggle('ok', liftBar >= info.mass && info.mass > 0);
+    this.bar.push.style.width = pct(info.pushForce);
+    this.liftMark.style.left = pct(info.mass);
+    // 무게중심(빨간 점)과 뜨는 힘의 중심(파란 세모)
+    const toX = x => (x + (GRID.cols - 1) / 2 + 0.5) * CELL, toY = y => ((GRID.rows - 1) / 2 - y + 0.5) * CELL;
+    this.cgDot.hidden = info.cockpits === 0;
+    this.cgDot.style.left = rem(toX(info.xcg)); this.cgDot.style.top = rem(toY(info.ycg));
+    this.clDot.hidden = info.up === 0 || info.cockpits === 0;
+    this.clDot.style.left = rem(toX(info.xcl)); this.clDot.style.top = rem(toY(info.ycl));
+    // 무게중심이 어긋나면 칸 전체가 살짝 기운다(앞이 무거우면 앞이 내려감)
+    const tilt = info.up > 0 && info.cockpits ? clamp(info.offset * 7, -9, 9) : 0;
+    this.gridEl.style.transform = `rotate(${tilt}deg)`;
+    this.flyBtn.classList.toggle('off', !info.valid);
+    const text = this.flashText || BUILD_TEXT[buildHintKey(info)];
+    if (this.bubble.textContent !== text) this.bubble.textContent = text;
+    game.dirty = true;
+  },
+  draw() {
+    drawBg();
+    drawHamo(ctx, game.isRetry ? 'retry' : 'build', 150, 968, 200, 210);
+  },
+};
+
+// ----- flight: 조립한 탈것 날리기 -----
 const READY_MS = 900, LAND_MS = 1700;
+const FLY_CELL = 48; // 비행 화면에서 칸 하나 크기(픽셀)
 
 screens.flight = {
+  animated: true,
+  enter() {
+    const K = CONTROL;
+    this.rules = buildRules();
+    this.grid = copyGrid(game.grid);
+    this.info = analyzeCraft(this.grid);
+    this.stage = game.stageDef || null;
+    setBg(this.stage ? 'stage' + this.stage.id : 'flight');
+    ui.className = 'collecting'; // 끌거나 누르는 동안 화면이 움직이지 않게
+    this.st = null;
+    this.result = null;
+    this.blowHeld = false; this.blowId = null; this.blowKey = false;
+    this.acc = 0; this.last = 0; this.landedAt = 0; this.spinA = 0; this.pops = [];
+    this.pauseAt = 0;
+    this.aim = { angle: K.startAngle, power: K.startPower, active: false, dragging: false, pull: 0, previewKey: '', preview: [], pointerId: null };
+    this.aimStart = performance.now();
+    if (game.autoLaunch) { this.launch(CRAFT_FLIGHT.autoAngle, 1, true); return; }
+    this.phase = 'aim';
+    showTutorial('pull', px(0) - 120, py(CRAFT_FLIGHT.launchHeight) + 40);
+  },
+  onPause() { this.pauseAt = performance.now(); },
+  onResume() { this.aimStart += performance.now() - this.pauseAt; this.pauseAt = 0; this.last = 0; },
+
+  launch(angle, power, auto) {
+    this.st = startFlight(this.info, angle, power);
+    this.phase = 'fly';
+    this.flyFrom = performance.now() + (auto ? READY_MS : 0);
+    this.last = 0;
+    sfx.play('launch');
+    const I = this.info;
+    if (I.thrust > 0) {
+      // 풀무 버튼: 누르는 동안 바람
+      const b = this.blowBtn = el('button', 'blow-btn');
+      b.type = 'button';
+      const pic = el('canvas'); pic.width = pic.height = 120;
+      const c = pic.getContext('2d'); c.translate(60, 60); drawPart(c, 'bellows', 100);
+      this.gaugeFill = el('div', 'blow-gauge-fill');
+      const gauge = el('div', 'blow-gauge'); gauge.append(this.gaugeFill);
+      b.append(pic, el('span', '', FLIGHT_TEXT.bellows), gauge);
+      b.addEventListener('pointerdown', e => {
+        if (this.blowId !== null) return;
+        this.blowId = e.pointerId; this.blowHeld = true;
+        try { b.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+        b.classList.add('on');
+      });
+      ui.append(b);
+      if (!auto) showTutorial('bellows', 1660, 860);
+    }
+    if (I.rotor > 0 && !I.thrust) showTutorial('rotor', 960, 420);
+  },
+  stopBlow() { this.blowHeld = false; this.blowId = null; if (this.blowBtn) this.blowBtn.classList.remove('on'); },
+
+  // ----- 입력 -----
+  pointerDown(x, y, e) {
+    if (this.phase === 'fly') { this.tapRotor(); return; }
+    if (this.phase !== 'aim' || this.aim.dragging) return;
+    const ox = px(0), oy = py(CRAFT_FLIGHT.launchHeight);
+    if (Math.hypot(x - ox, y - oy) > 230) return; // 탈것 근처를 눌러야 잡힘
+    this.aim.pointerId = e ? e.pointerId : null;
+    try { if (e) ui.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+    this.aim.dragging = true;
+    this.aim.active = true;
+    this.dragTo(x, y);
+  },
+  dragTo(x, y) {
+    const a = this.aim;
+    this.aimStart = performance.now();
+    const aim = aimFromPull(x - px(0), y - py(CRAFT_FLIGHT.launchHeight));
+    a.pull = aim.pull; a.cancel = aim.cancel; a.active = !aim.cancel;
+    if (aim.cancel) return;
+    a.power = aim.power;
+    if (aim.pull > 8) a.angle = aim.angle;
+  },
+  onMove(e, p) {
+    if (this.phase === 'aim' && this.aim.dragging && this.aim.pointerId === e.pointerId) this.dragTo(p.x, p.y);
+  },
+  onUp(e) {
+    if (this.blowId === e.pointerId) this.stopBlow();
+    const a = this.aim;
+    if (this.phase !== 'aim' || !a.dragging || a.pointerId !== e.pointerId) return;
+    a.dragging = false;
+    if (a.cancel || a.pull < CONTROL.minPull) { a.active = false; a.cancel = false; return; }
+    this.launch(a.angle, a.power);
+  },
+  onCancel(e) {
+    if (this.blowId === e.pointerId) this.stopBlow();
+    if (this.aim.dragging && this.aim.pointerId === e.pointerId) { this.aim.dragging = false; this.aim.active = false; }
+  },
+  onKey(e) {
+    const K = CONTROL, k = e.key;
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(k)) return;
+    e.preventDefault();
+    if (document.activeElement) document.activeElement.blur();
+    if (this.phase === 'fly') {
+      if (k === ' ' && !e.repeat) this.tapRotor();
+      if (k === 'ArrowRight') { this.blowKey = true; this.blowHeld = true; if (this.blowBtn) this.blowBtn.classList.add('on'); }
+      return;
+    }
+    if (this.phase !== 'aim') return;
+    const a = this.aim;
+    a.active = true;
+    this.aimStart = performance.now();
+    if (k === 'ArrowUp') a.angle = clamp(a.angle + K.keyAngleStep, K.minAngle, K.maxAngle);
+    else if (k === 'ArrowDown') a.angle = clamp(a.angle - K.keyAngleStep, K.minAngle, K.maxAngle);
+    else if (k === 'ArrowRight') a.power = clamp(a.power + K.keyPowerStep, K.minPower, 1);
+    else if (k === 'ArrowLeft') a.power = clamp(a.power - K.keyPowerStep, K.minPower, 1);
+    else if (k === ' ' && !e.repeat) this.launch(a.angle, a.power);
+  },
+  onKeyUp(e) { if (e.key === 'ArrowRight' && this.blowKey) { this.blowKey = false; this.stopBlow(); } },
+  tapRotor() {
+    const st = this.st;
+    if (!st || game.tut || performance.now() < this.flyFrom) return;
+    if (!tapRotor(st)) return;
+    sfx.play('drum');
+    this.pops.push({ x: px(st.x) + 70, y: py(st.y) - 80, at: performance.now() });
+  },
+
+  // ----- 그리기 -----
+  drawAim(now) {
+    const K = CONTROL, a = this.aim, ox = px(0), oy = py(CRAFT_FLIGHT.launchHeight);
+    ctx.fillStyle = C.ink;
+    ctx.font = '800 34px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const deg of K.angleMarks) {
+      const r = deg * DEG;
+      ctx.lineWidth = 5; ctx.strokeStyle = C.ink;
+      ctx.beginPath(); ctx.moveTo(ox + Math.cos(r) * 130, oy - Math.sin(r) * 130); ctx.lineTo(ox + Math.cos(r) * 190, oy - Math.sin(r) * 190); ctx.stroke();
+      haloText(ctx, deg + '°', ox + Math.cos(r) * 232, oy - Math.sin(r) * 232);
+    }
+    const strength = clamp((a.power - K.minPower) / (1 - K.minPower), 0, 1);
+    const tilt = (a.angle - K.optAngle) / K.pullAngleScale * DEG;
+    const back = a.active ? strength * 95 + 15 : 0;
+    const bx = ox - Math.cos(tilt) * back, by = oy + Math.sin(tilt) * back;
+    if (a.active) {
+      // 예상 궤적(앞부분만, 조작 없이)
+      const key = Math.round(a.angle) + '/' + a.power.toFixed(2);
+      if (key !== a.previewKey) {
+        const st = startFlight(this.info, a.angle, a.power);
+        while (!st.done) stepFlight(st, false, SIM_STEP);
+        a.preview = st.samples.slice(0, Math.ceil(st.samples.length * K.previewShare));
+        a.previewKey = key;
+      }
+      ctx.strokeStyle = C.ink; ctx.lineWidth = 5; ctx.setLineDash([12, 16]); ctx.lineCap = 'round';
+      ctx.beginPath();
+      a.preview.forEach((q, i) => { if (i === 0) ctx.moveTo(px(q.x), py(q.y)); else ctx.lineTo(px(q.x), py(q.y)); });
+      ctx.stroke();
+      ctx.setLineDash([]); ctx.lineCap = 'butt';
+    }
+    drawCraft(ctx, this.grid, bx, by, FLY_CELL, a.angle, { info: this.info, wave: now / 200 });
+    if (a.active) {
+      ctx.strokeStyle = this.powerColor(a.power); ctx.lineWidth = 9; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(ox + 26, oy + 44); ctx.lineTo(bx, by + 20); ctx.lineTo(ox - 66, oy + 38); ctx.stroke();
+      ctx.lineCap = 'butt';
+      const rx = ox + 270, ry = oy - 158, rw = 300;
+      ctx.fillStyle = C.ink; ctx.font = '900 92px system-ui, sans-serif'; ctx.textAlign = 'left';
+      haloText(ctx, Math.round(a.angle) + '°', rx, ry);
+      roundBox(ctx, rx, ry + 54, rw, 44, 14); fillStroke(ctx, C.paper, 4);
+      if (strength > 0.01) { roundBox(ctx, rx + 5, ry + 59, (rw - 10) * strength, 34, 10); ctx.fillStyle = this.powerColor(a.power); ctx.fill(); }
+    }
+    if (!a.dragging && now - this.aimStart > K.idleHintSeconds * 1000 && !game.tut) {
+      const t = ((now - this.aimStart) % 1400) / 1400, k = t < 0.7 ? t / 0.7 : 1;
+      drawFinger(ctx, ox - 130 * k, oy + 16, 1.5);
+      ctx.fillStyle = C.ink; ctx.font = '900 64px system-ui, sans-serif'; ctx.textAlign = 'center';
+      haloText(ctx, CONTROL_TEXT.pullHint, 960, 200);
+    }
+    ctx.textBaseline = 'middle';
+  },
+  powerColor(power) { return (CONTROL.powerBands.find(b => power <= b.upTo + 1e-6) || CONTROL.powerBands[0]).color; },
+  drawReadout(meters) {
+    ctx.fillStyle = C.paper; ctx.strokeStyle = C.ink; ctx.lineWidth = 5;
+    roundBox(ctx, 1560, 30, 330, 110, 28); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = C.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '900 76px system-ui, sans-serif';
+    ctx.fillText(`${Math.round(meters)} m`, 1725, 88);
+  },
+  // 회전날개 남은 두드리기(위쪽 가운데)
+  drawTaps(now) {
+    const st = this.st, n = this.info.taps;
+    if (!n) return;
+    for (let i = 0; i < n; i++) {
+      ctx.save();
+      ctx.translate(960 + (i - (n - 1) / 2) * 70, 70);
+      if (i >= st.tapsLeft) ctx.globalAlpha = 0.3;
+      drawPart(ctx, 'rotor', 60, { spin: i < st.tapsLeft ? now / 300 : 0.5 });
+      ctx.restore();
+    }
+    if (st.tapsUsed === 0 && st.tapsLeft > 0 && !st.done && !this.info.thrust) {
+      ctx.fillStyle = C.ink; ctx.font = '900 60px system-ui, sans-serif'; ctx.textAlign = 'center';
+      haloText(ctx, FLIGHT_TEXT.rotorHint, 960, 170);
+    }
+    this.pops = this.pops.filter(q => now - q.at < 700);
+    for (const q of this.pops) {
+      const k = (now - q.at) / 700;
+      ctx.save(); ctx.globalAlpha = 1 - k; ctx.fillStyle = C.orangeDark;
+      ctx.font = '900 84px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      haloText(ctx, CONTROL_TEXT.drumPop, q.x, q.y - k * 70);
+      ctx.restore();
+    }
+  },
+  drawTrail() {
+    const s = this.st.samples;
+    ctx.strokeStyle = C.ink; ctx.lineWidth = 5; ctx.setLineDash([16, 16]); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(px(s[0].x), py(s[0].y));
+    for (let j = 1; j < s.length; j += 2) ctx.lineTo(px(s[j].x), py(s[j].y));
+    ctx.lineTo(px(this.st.x), py(this.st.y));
+    ctx.stroke();
+    ctx.setLineDash([]); ctx.lineCap = 'butt';
+  },
+  // 고정 간격으로 계산해서 어느 기기에서나 같은 결과
+  advance(now) {
+    const st = this.st;
+    if (!this.last || game.tut || now < this.flyFrom) { this.last = now; return; }
+    const dt = Math.min(0.1, (now - this.last) / 1000) * CRAFT_FLIGHT.playSpeed;
+    this.last = now;
+    this.acc += dt;
+    while (this.acc >= SIM_STEP && !st.done) { stepFlight(st, this.blowHeld, SIM_STEP); this.acc -= SIM_STEP; }
+    this.spinA += st.spin * dt * 30;
+    if (this.gaugeFill) this.gaugeFill.style.width = (st.gauge / Math.max(0.01, this.info.gauge) * 100) + '%';
+    if (st.done && !this.landedAt) {
+      this.landedAt = now;
+      this.result = flightSummary(st, this.rules.allowed);
+      this.result.parts = this.info.partCount;
+      this.result.combo = gridToRows(this.grid).join('/') + '@' + this.result.distance;
+      this.stopBlow();
+      if (this.blowBtn) this.blowBtn.disabled = true;
+      sfx.play(this.result.inRiver ? 'splash' : 'empty');
+    }
+  },
+  draw(now) {
+    if (game.tut && this.pauseAt) now = this.pauseAt;
+    drawBg();
+    if (this.phase === 'aim') { this.drawAim(now); this.drawReadout(0); return; }
+    this.advance(now);
+    const st = this.st;
+    if (now < this.flyFrom) {
+      ctx.fillStyle = C.ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = '900 110px system-ui, sans-serif';
+      ctx.fillText(TEXT.go, 960, 280);
+    }
+    this.drawTrail();
+    let y = py(st.y), pitch = st.theta;
+    if (this.landedAt) {
+      const age = now - this.landedAt;
+      if (this.result.inRiver) { y += Math.min(1, age / 300) * 34; pitch = pitch + (8 - pitch) * Math.min(1, age / 300); }
+      else pitch *= 1 - Math.min(1, age / 250);
+    }
+    drawCraft(ctx, this.grid, px(st.x), y, FLY_CELL, pitch, {
+      info: this.info, spin: this.spinA, blow: st.blowing, blowT: now / 250, wave: now / 160, roll: -st.x / 3,
+    });
+    if (this.landedAt) this.drawLanding(now - this.landedAt);
+    this.drawTaps(now);
+    this.drawReadout(st.x);
+    if (this.landedAt && now - this.landedAt > LAND_MS) {
+      game.flight = this.result;
+      go('result');
+    }
+  },
+  drawLanding(age) {
+    const st = this.st, cx = px(st.x);
+    if (this.result.inRiver) {
+      // 강 아래를 다시 덮어서 잠긴 것처럼
+      const k = game.canvasK, top = GROUND_Y + 34;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(bg, 0, top * k, W * k, (RULER_Y - top) * k, 0, top * k, W * k, (RULER_Y - top) * k);
+      resetTransform(ctx);
+      if (age < 700) {
+        const a = age / 700;
+        ctx.fillStyle = C.cloud;
+        for (const [dx, h, r] of [[-70, 110, 16], [-34, 170, 20], [6, 200, 22], [46, 160, 18], [84, 100, 14]]) {
+          circle(ctx, cx + dx * (0.6 + a), GROUND_Y - h * Math.sin(a * Math.PI), r * (1 - a * 0.5)); ctx.fill();
+        }
+      }
+      if (age > 350) {
+        const pop = Math.min(1, (age - 350) / 250);
+        drawHamo(ctx, 'river', cx + (cx < 900 ? 170 : -170), GROUND_Y + 56 + Math.sin(age / 300) * 5, 200 * pop, 170 * pop);
+      }
+    } else if (age < 500) {
+      ctx.fillStyle = C.sandDark;
+      const a = age / 500;
+      for (const [dx, r] of [[-110, 18], [-70, 24], [70, 24], [110, 18]]) {
+        circle(ctx, cx + dx * (0.7 + a * 0.6), py(st.y) + 30 - a * 18, r * (1 - a * 0.5)); ctx.fill();
+      }
+    }
+  },
+};
+
+// ----- legacyFlight: 예전 3가지 고르기 비행(도전 모드 연결 전까지) -----
+
+screens.legacyFlight = {
   animated: true,
   enter() {
     const challenge = game.mode === 'challenge', stage = currentStage();
@@ -2789,10 +3485,14 @@ function buildChart(compact) {
     }
     grid.append(cell);
   }
-  const rows = [
-    [TEXT.wingLabel, r => CONFIG.wings[r.wing].short],
-    [TEXT.bodyLabel, r => CONFIG.bodies[r.body].short],
-    ['무게추', r => CONFIG.ballasts[r.ballast].short],
+  // 칸 조립 기록이면 나는 방식·부품 수, 예전 기록이면 날개·몸통·무게추
+  const rows = runs.length && runs[runs.length - 1].style ? [
+    ['방식', r => (r.style ? STYLE_TEXT[r.style] : '')],
+    ['부품', r => (r.style ? r.parts + '개' : '')],
+  ] : [
+    [TEXT.wingLabel, r => (r.wing ? CONFIG.wings[r.wing].short : '')],
+    [TEXT.bodyLabel, r => (r.body ? CONFIG.bodies[r.body].short : '')],
+    ['무게추', r => (r.ballast ? CONFIG.ballasts[r.ballast].short : '')],
   ];
   for (const [label, get] of rows) {
     grid.append(el('div', 'row-head', label));
@@ -2809,7 +3509,7 @@ screens.result = {
   enter() {
     setBg('paper');
     const fl = game.flight;
-    game.history.push({ distance: fl.distance, wing: fl.wing, body: fl.body, ballast: fl.ballast });
+    game.history.push(fl.style ? { distance: fl.distance, style: fl.style, parts: fl.parts } : { distance: fl.distance, wing: fl.wing, body: fl.body, ballast: fl.ballast });
     if (game.history.length > CONFIG.historyMax) game.history.shift();
     saveTop(fl, game.mode);
     this.success = game.mode === 'challenge' && isChallengeSuccess(fl, currentStage());
@@ -3132,7 +3832,7 @@ screens.collect = {
       .sort((p, q) => CONFIG.bodies[p].weight - CONFIG.bodies[q].weight)[0];
     game.pick = { wing, body, ballast: CHALLENGE.defaultBallast };
     game.isRetry = false;
-    go('build');
+    go('legacyBuild');
   },
 
   // ----- 누른 곳에 무엇이 있는지 찾아서 그쪽으로 걸어간다 -----
@@ -3710,22 +4410,29 @@ async function boot() {
   });
   // 비행 화면: 끌기와 놓기는 손가락이 화면 밖으로 나가도 받는다
   // 당기기를 시작한 손가락만 따라간다(두 번째 손가락을 대었다 떼도 발사되지 않음)
-  const aimFinger = e => game.screen === 'flight' && screens.flight.phase === 'aim' && screens.flight.aim.dragging
-    && (screens.flight.aim.pointerId == null || screens.flight.aim.pointerId === e.pointerId);
-  window.addEventListener('pointermove', e => { if (aimFinger(e)) { const p = toLogical(e); screens.flight.dragTo(p.x, p.y); } });
-  window.addEventListener('pointerup', e => { if (aimFinger(e)) screens.flight.pointerUp(); });
-  window.addEventListener('pointercancel', e => { if (aimFinger(e)) screens.flight.cancelDrag(); });
+  const aimFinger = e => game.screen === 'legacyFlight' && screens.legacyFlight.phase === 'aim' && screens.legacyFlight.aim.dragging
+    && (screens.legacyFlight.aim.pointerId == null || screens.legacyFlight.aim.pointerId === e.pointerId);
+  window.addEventListener('pointermove', e => { if (aimFinger(e)) { const p = toLogical(e); screens.legacyFlight.dragTo(p.x, p.y); } });
+  window.addEventListener('pointerup', e => { if (aimFinger(e)) screens.legacyFlight.pointerUp(); });
+  window.addEventListener('pointercancel', e => { if (aimFinger(e)) screens.legacyFlight.cancelDrag(); });
+  // 조립·비행 화면: 끌기·놓기를 화면 밖에서도 받는다(각 화면이 손가락 번호를 확인)
+  window.addEventListener('pointermove', e => { const s = screens[game.screen]; if (s.onMove) s.onMove(e, toLogical(e)); });
+  window.addEventListener('pointerup', e => { const s = screens[game.screen]; if (s.onUp) s.onUp(e, toLogical(e)); });
+  window.addEventListener('pointercancel', e => { const s = screens[game.screen]; if (s.onCancel) s.onCancel(e); });
+  window.addEventListener('keyup', e => { const s = screens[game.screen]; if (s.onKeyUp) s.onKeyUp(e); });
+  game.toLogical = toLogical;
   // 모으기 화면: PC 방향키, 스페이스바·Enter로 뒤지기
   const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
   window.addEventListener('keydown', e => {
     touched();
     onFirstInput();
     if (game.tut) { e.preventDefault(); if (!e.repeat) game.tut.close(); return; } // 안내는 아무 키로 닫힘
-    if (game.screen === 'flight') {
+    if (screens[game.screen].onKey) { screens[game.screen].onKey(e); return; }
+    if (game.screen === 'legacyFlight') {
       if (ARROWS.includes(e.key) || e.key === ' ') {
         e.preventDefault();
         if (document.activeElement) document.activeElement.blur();
-        if (!(e.key === ' ' && e.repeat)) screens.flight.key(e.key);
+        if (!(e.key === ' ' && e.repeat)) screens.legacyFlight.key(e.key);
       }
       return;
     }
