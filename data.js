@@ -135,6 +135,89 @@ const FLIGHT_TEXT = {
 // 부품 제한이 없을 때 '아요 추천' 조립(오른쪽이 앞, 글자는 PARTS의 code, . = 빈칸)
 const FREE_RECOMMEND = ['.WWW.', 'TFCF.', '.WWW.'];
 
+// =============================================================
+// 스테이지 5개(비거 만들기). 수치를 바꾼 뒤에는 runStageTest()로 꼭 확인
+// =============================================================
+// parts: 쓸 수 있는 부품과 개수, newParts: 이 스테이지에서 처음 나오는 부품(하모가 한 문장씩 소개)
+// goal: { type: 'distance', value: m } 이만큼 멀리 / { type: 'height', value: m } 이만큼 높이
+// locked: 옮길 수 없는 짐 [{ r: 줄(0 위), c: 칸(0 뒤), key }], box: 하늘의 별 상자 { x: 거리 m, y: 높이 m, r: 크기 m }
+// stars: 별 조건 3개 — goal 목표 도착 / maxParts 부품 n개 이하로 성공(조종석·짐 빼고) / box 별 상자 지나가기
+//                      distance n m 이상 / height n m 이상
+// recommend: '아요 추천' 조립(오른쪽이 앞)
+const STAGES = [
+  {
+    id: 1, name: '언덕에서 출발', title: '망진산 언덕에서 출발해 보기',
+    intro: '망진산 언덕에서 남강 너머까지 날아 보자!',
+    goal: { type: 'distance', value: 50 },
+    parts: { cockpit: 1, frame: 2, wing: 4 }, newParts: ['wing', 'frame'],
+    box: { x: 30, y: 40, r: 6 },
+    stars: [{ type: 'goal' }, { type: 'maxParts', value: 2 }, { type: 'box' }],
+    recommend: ['..W..', '.FC..', '..W..'],
+  },
+  {
+    id: 2, name: '남강 건너기', title: '남강 건너기',
+    intro: '앞에 무거운 짐을 실었어. 앞뒤 무게를 맞춰야 해!',
+    goal: { type: 'distance', value: 70 },
+    parts: { cockpit: 1, frame: 3, wing: 5, weight: 2 }, newParts: ['weight'],
+    locked: [{ r: 1, c: 4, key: 'weight' }],
+    box: { x: 42, y: 24, r: 6 },
+    stars: [{ type: 'goal' }, { type: 'maxParts', value: 4 }, { type: 'box' }],
+    recommend: ['..WW.', '.FCW.', '..WW.'],
+  },
+  {
+    id: 3, name: '높이 떠오르기', title: '높이 떠오르기',
+    intro: '구름 높이까지 둥실 떠올라 보자!',
+    goal: { type: 'height', value: 56 },
+    parts: { cockpit: 1, frame: 3, wing: 4, weight: 1, rotor: 3 }, newParts: ['rotor'],
+    box: { x: 22, y: 59, r: 6 },
+    stars: [{ type: 'goal' }, { type: 'maxParts', value: 4 }, { type: 'box' }],
+    recommend: ['.RRR.', '.FCF.', '.....'],
+  },
+  {
+    id: 4, name: '멀리 소식 전하기', title: '멀리 소식 전하기',
+    intro: '성 밖 멀리까지 소식을 전해야 해!',
+    goal: { type: 'distance', value: 110 },
+    parts: { cockpit: 1, frame: 3, wing: 6, weight: 1, rotor: 2, bellows: 3 }, newParts: ['bellows'],
+    box: { x: 80, y: 28, r: 6 },
+    stars: [{ type: 'goal' }, { type: 'maxParts', value: 5 }, { type: 'box' }],
+    recommend: ['.WW..', 'BFCB.', '.WW..'],
+  },
+  {
+    id: 5, name: '자유 조립', title: '자유 조립: 최고 기록 도전',
+    intro: '모든 부품을 써서 가장 멀리 날아 보자!',
+    goal: { type: 'distance', value: 100 },
+    parts: { cockpit: 1, frame: 4, wing: 10, weight: 2, rotor: 3, bellows: 3, wheel: 2, tail: 2 }, newParts: ['wheel', 'tail'],
+    box: { x: 70, y: 31, r: 6 },
+    stars: [{ type: 'goal' }, { type: 'distance', value: 130 }, { type: 'box' }],
+    recommend: ['.WWW.', 'TFCF.', '.WWW.'],
+  },
+];
+
+// 스테이지 화면 문구. {n} 숫자, {goal} 목표
+const STAGE_MODE_TEXT = {
+  pickTitle: '어디로 날아 볼까?',
+  locked: '잠김',
+  goalDistance: '{goal}m 날기',
+  goalHeight: '{goal}m 높이',
+  star: { goal: '목표 도착', maxParts: '부품 {n}개 이하', box: '별 상자', distance: '{n}m 넘기', height: '{n}m 높이' },
+  success: '성공!',
+  reachedDistance: '목표 {goal}m 도착!',
+  reachedHeight: '{goal}m 높이까지 떠올랐어!',
+  leftDistance: '목표까지 {n}m 남았어!',
+  leftHeight: '목표 높이까지 {n}m 남았어!',
+  maxHeight: '최고 높이 {n}m',
+  newStar: '별을 얻었어!',
+  allStars: '별 3개 다 모았어!',
+  opened: '다음 스테이지가 열렸어!',
+  next: '다음 스테이지',
+  pick: '스테이지 고르기',
+  rebuild: '다시 조립하기',
+  goalFlag: '목표',
+  goalHeightLabel: '목표 높이',
+  allOpen: '스테이지 모두 열기',
+  start: '조립하러 가기',
+};
+
 // 비행 계산 값(단위: m, 초). 바꾼 뒤에는 runAllCombos()로 꼭 확인
 const CRAFT_FLIGHT = {
   g: 9.8,
@@ -209,6 +292,7 @@ const STORY = {
   lines: [
     { hamo: 'story', text: '옛날 책에 이런 이야기가 전해져. 임진왜란 때 진주성 사람들이 하늘을 나는 수레, 비거를 만들었대!' },
     { hamo: 'storyShape', text: '모양은 따오기를 닮았다고 적혀 있어. 진짜 모습은 아무도 몰라서, 우리가 직접 만들어 보는 거야!' },
+    { hamo: 'build', text: '비거가 날개로 날았는지, 빙글빙글 도는 날개로 떴는지는 아무도 몰라. 그래서 여러 모양으로 만들어 보는 거야!' },
   ],
   // TODO: 비거 체험관 자료로 확인 후 문구 추가
 };
@@ -323,8 +407,8 @@ const HAMO_IMG = {
 // ----- 화면 문구 -----
 const TEXT = {
   title: '아요의 비거 날리기',
-  startEasy: '쉬운 모드',
-  startEasySub: '바로 만들기',
+  startEasy: '비거 만들기',
+  startEasySub: '스테이지 5개',
   startChallenge: '도전 모드',
   startChallengeSub: '진주성 60초',
   titleHello: '안녕! 아요랑 비거를 날려 보자!',
@@ -353,7 +437,7 @@ const TEXT = {
   rulerUnit: '거리(m)',
   goalFlag: '아군 진영',
   tryChallenge: '도전 모드 해보기',
-  tryEasy: '쉬운 모드로 연습하기',
+  tryEasy: '비거 만들기로 연습',
 };
 
 // ----- 진짜 장소 안내(퀴즈를 마친 뒤) -----
@@ -496,6 +580,7 @@ const RECORD_CARDS = [
   { id: 'books',  text: '비거 이야기는 『오주연문장전산고』, 『여암전서』 같은 옛 책에 전해져.' },
   { id: 'maker',  text: '비거를 만든 사람은 정평구라는 군관이라고 전해져.' },
   { id: 'plan',   text: '비거를 그린 설계도는 남아 있지 않아. 그래서 사람들이 여러 모양으로 복원해 보고 있어.' },
+  { id: 'rotor',  text: '비거가 날개로 날았는지, 빙글빙글 도는 날개로 떴는지는 아무도 몰라. 그래서 여러 모양으로 만들어 보는 거야!' },
 ];
 
 const RECORD_TEXT = {
@@ -612,7 +697,7 @@ const CONTROL = {
 // states: 금 간·찢어진 부품 있음, hintVillager: 힌트 주는 마을 사람 id(null 없음), trades: 물물교환
 // events: [최소, 최대] 돌발 이벤트 수, launch: 'auto' 자동 / 'pull' 당겨서 쏘기, drums: 배 두드리기 횟수
 // needString: 끈이 없을 때 벌칙 적용, icons: 카드에 보여 줄 새 요소
-const STAGES = [
+const CHALLENGE_LEVELS = [
   {
     id: 1, name: '1단계', goal: 90,
     spots: ['forest-straw', 'storage-straw', 'storage-box', 'carpenter-box', 'paper-box', 'yard-crock', 'yard-jar', 'smithy-jar'], // 가운데 가까운 곳만
@@ -700,8 +785,8 @@ const CONTROL_TEXT = {
   noDrum: '화면을 눌러 배를 두드려 봐!',
   drumWin: '옛 책 속 비거처럼 날았어!',
   combo: '연속 {n}개!',
-  easyControl: '조종하기',
-  easyAuto: '자동 비행',
+  easyControl: '당겨서 쏘기',
+  easyAuto: '자동 발사',
   soundOn: '소리 켜기',
   soundOff: '소리 끄기',
   speakOn: '읽어주기 켜기',

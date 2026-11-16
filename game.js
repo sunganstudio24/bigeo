@@ -258,6 +258,118 @@ function simulateCraft(grid, opt = {}) {
   return { info, st, ...flightSummary(st) };
 }
 
+// ----- 스테이지 규칙(화면과 무관) -----
+function rulesFromStage(stage) {
+  return {
+    allowed: PART_ORDER.filter(k => stage.parts[k] !== undefined),
+    limits: { ...stage.parts }, locked: stage.locked || [], recommend: stage.recommend,
+  };
+}
+// 궤적이 별 상자를 지나갔는지
+function boxPassed(box, samples) {
+  if (!box) return false;
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], b = samples[i], dx = b.x - a.x, dy = b.y - a.y, L = dx * dx + dy * dy;
+    const k = L ? clamp(((box.x - a.x) * dx + (box.y - a.y) * dy) / L, 0, 1) : 0;
+    if (Math.hypot(a.x + dx * k - box.x, a.y + dy * k - box.y) <= box.r) return true;
+  }
+  return false;
+}
+// 성공 여부와 별 3개
+function stageOutcome(stage, info, s, rules) {
+  const g = stage.goal;
+  const ok = !s.crashed && (g.type === 'height' ? s.maxHeight >= g.value : s.distance >= g.value);
+  const parts = info.partCount - (rules ? rules.locked.length : 0);
+  const passed = boxPassed(stage.box, s.samples);
+  const stars = stage.stars.map(c => {
+    if (c.type === 'goal') return ok;
+    if (c.type === 'maxParts') return ok && parts <= c.value;
+    if (c.type === 'box') return passed;
+    if (c.type === 'distance') return !s.crashed && s.distance >= c.value;
+    if (c.type === 'height') return !s.crashed && s.maxHeight >= c.value;
+    return false;
+  });
+  return { ok, stars, passed, parts };
+}
+
+// 별 기록: 날짜가 바뀌어도 남는다. { 스테이지 id: [별1, 별2, 별3] }
+const STAR_KEY = 'ayo-bigeo-stars';
+let memoryStars = {};
+function loadStars() {
+  try { const v = JSON.parse(localStorage.getItem(STAR_KEY)); if (v && typeof v === 'object') memoryStars = v; } catch (e) { /* 메모리 기록만 사용 */ }
+  return memoryStars;
+}
+// 새로 얻은 별만 true인 목록을 돌려준다
+function saveStageStars(id, stars) {
+  const all = loadStars(), old = all[id] || [false, false, false];
+  const merged = old.map((b, i) => b || !!stars[i]);
+  all[id] = merged;
+  try { localStorage.setItem(STAR_KEY, JSON.stringify(all)); } catch (e) { /* 무시 */ }
+  return { merged, fresh: merged.map((b, i) => b && !old[i]) };
+}
+function stageUnlocked(id) {
+  if (id === 1 || progress.allStages) return true;
+  const s = loadStars()[id - 1];
+  return !!(s && s[0]);
+}
+
+// 스테이지 검사용: 별 3개를 한 번에 얻는 조립 예시(아요 추천과 함께 찾아봄)
+const TEST_STAGE_SOLUTIONS = {
+  1: [['..W..', '.FC..', '..W..'], ['..W..', '..C..', '..W..'], ['.WW..', '.FC..', '.W...']],
+  2: [['..WW.', '.FCW.', '..WW.'], ['..WW.', '..CW.', '...W.'], ['..WW.', '..CW.', '..W..'], ['...W.', '..CWK', '..WW.']],
+  3: [['.RRR.', '.FCF.', '.....'], ['.RRR.', '..C..', '.....'], ['RRR..', '.FC..', '.....']],
+  4: [['.WW..', 'BFCB.', '.WW..'], ['.B...', 'BBCW.', '..W..'], ['.WWW.', 'BFCB.', '.WW..']],
+  5: [['.WWW.', 'TFCF.', '.WWW.'], ['WWWWW', 'TFCBH', 'WWRWW'], ['WWWW.', 'TFCBH', 'WWWW.']],
+};
+
+// 스테이지 검사 — 브라우저 콘솔에서 runStageTest() 실행
+// '아요 추천'으로 깰 수 있는지, 별 3개를 실제로 얻을 수 있는지 확인한다
+function runStageTest() {
+  const rows = [], problems = [];
+  const flyOpts = [];
+  for (let angle = 10; angle <= 60; angle += 5) for (const power of [0.85, 1]) for (const tapEvery of [0.5, 0.9, 1.4]) for (const blow of [true, false]) flyOpts.push({ angle, power, tapEvery, blow: blow ? undefined : () => false });
+  for (const stage of STAGES) {
+    const R = rulesFromStage(stage);
+    const rec = fitGrid(gridFromRows(stage.recommend), R);
+    const recInfo = analyzeCraft(rec);
+    const want = gridFromRows(stage.recommend);
+    for (const l of R.locked) want[l.r][l.c] = l.key;
+    if (gridToRows(rec).join('/') !== gridToRows(want).join('/')) problems.push(`${stage.id}: 아요 추천이 부품 개수·종류를 넘음`);
+    if (!recInfo.valid) problems.push(`${stage.id}: 아요 추천 조립이 올바르지 않음`);
+    const auto = simulateCraft(rec), autoOut = stageOutcome(stage, recInfo, auto, R);
+    const pull = simulateCraft(rec, { angle: 30, power: 1 }), pullOut = stageOutcome(stage, recInfo, pull, R);
+    if (!autoOut.ok) problems.push(`${stage.id}: 아요 추천 + 자동 발사로 못 깸`);
+    if (!pullOut.ok) problems.push(`${stage.id}: 아요 추천 + 30° 당겨 쏘기로 못 깸`);
+    const bare = simulateCraft(freshGrid(R));
+    if (stageOutcome(stage, analyzeCraft(freshGrid(R)), bare, R).ok) problems.push(`${stage.id}: 조종석만으로도 깸(너무 쉬움)`);
+    // 별 3개 찾기
+    let three = null;
+    const each = [false, false, false];
+    const builds = [stage.recommend, ...(TEST_STAGE_SOLUTIONS[stage.id] || [])];
+    for (const b of builds) {
+      const g = fitGrid(gridFromRows(b), R), info = analyzeCraft(g);
+      if (!info.valid) continue;
+      for (const o of flyOpts) {
+        const out = stageOutcome(stage, info, simulateCraft(g, o), R);
+        out.stars.forEach((v, i) => { if (v) each[i] = true; });
+        if (out.stars.every(Boolean)) { three = `${gridToRows(g).join('/')} ${o.angle}° ${o.power}`; break; }
+      }
+      if (three) break;
+    }
+    if (!three) problems.push(`${stage.id}: 별 3개를 한 번에 얻는 방법을 못 찾음(얻을 수 있는 별: ${each.map(v => (v ? '★' : '☆')).join('')})`);
+    const goalVal = stage.goal.type === 'height' ? auto.maxHeight : auto.distance;
+    rows.push({
+      스테이지: `${stage.id}. ${stage.name}`, 목표: `${stage.goal.value}m ${stage.goal.type === 'height' ? '높이' : '거리'}`,
+      '추천·자동': goalVal, '추천 별(자동)': autoOut.stars.map(v => (v ? '★' : '☆')).join(''),
+      '추천·30°': stage.goal.type === 'height' ? pull.maxHeight : pull.distance, '별 3개 예': three || '없음',
+    });
+  }
+  console.table(rows);
+  if (problems.length) console.warn('문제 ' + problems.length + '건:\n' + problems.join('\n'));
+  else console.log('스테이지 5개 검사 통과');
+  return { rows, problems };
+}
+
 // 검사용 대표 조립(오른쪽이 앞). C 조종석 F 대나무 틀 W 한지 날개 K 무게추 R 회전날개 B 풀무 H 수레바퀴 T 연 꼬리
 const TEST_CRAFTS = {
   '날개 2장':        ['..W..', '.FC..', '..W..'],
@@ -822,7 +934,7 @@ function runChallengeCombos() {
   const decisionSeconds = 1.5; // 부품 팝업에서 고르는 시간(가정)
   const searchSeconds = SEARCH_TAPS / SEARCH_TAPS_PER_SECOND;
 
-  for (const stage of STAGES) {
+  for (const stage of CHALLENGE_LEVELS) {
     const tag = stage.name;
     for (const c of cases[stage.id]) {
       const name = label(c.bag);
@@ -908,7 +1020,7 @@ function runChallengeCombos() {
 
   // 1단계: 대나무 + 한지 2장 이상이면 성공할 수 있어야 함
   {
-    const st = STAGES[0];
+    const st = CHALLENGE_LEVELS[0];
     for (const n of [2, 3]) {
       const parts = partsFromBag(['bamboo', ...Array(n).fill('paper')], 0, st);
       const pick = { wing: n >= 3 ? 'big' : 'normal', body: 'bamboo', ballast: 'center' };
@@ -917,7 +1029,7 @@ function runChallengeCombos() {
   }
 
   // 시드 3개: 이벤트 목록과 3단계 배치
-  const stage3 = STAGES[2], seedList = [1, 2, 3], layouts = seedList.map(s => shuffleLoot(s, stage3));
+  const stage3 = CHALLENGE_LEVELS[2], seedList = [1, 2, 3], layouts = seedList.map(s => shuffleLoot(s, stage3));
   for (const seed of seedList) {
     const plan = makeEventPlan(seed, stage3);
     eventRows.push({ 시드: seed, 이벤트: plan.map(e => `${e.type === 'paper' ? '날아가는 한지' : '도망가는 닭'} ${e.at}초`).join(', ') });
@@ -929,7 +1041,7 @@ function runChallengeCombos() {
     if (plan.length < 1 || plan.length > 2) problems.push(`시드 ${seed}: 이벤트 ${plan.length}개`);
     if (plan.some(e => e.at < EVENTS.atFrom || e.at > EVENTS.atTo)) problems.push(`시드 ${seed}: 이벤트 시간 벗어남`);
     if (JSON.stringify(plan) !== JSON.stringify(makeEventPlan(seed, stage3))) problems.push(`시드 ${seed}: 이벤트가 매번 다름`);
-    if (makeEventPlan(seed, STAGES[0]).length || makeEventPlan(seed, STAGES[1]).length) problems.push('1·2단계에 이벤트가 있음');
+    if (makeEventPlan(seed, CHALLENGE_LEVELS[0]).length || makeEventPlan(seed, CHALLENGE_LEVELS[1]).length) problems.push('1·2단계에 이벤트가 있음');
   }
   if (eventCounts.size !== 2) problems.push('이벤트 수가 1개·2개로 나뉘지 않음');
   if (new Set(layouts.map(l => l.join())).size !== 3) problems.push('시드가 달라도 배치가 같음');
@@ -948,7 +1060,7 @@ function runChallengeCombos() {
     ...Object.entries(TUTORIALS.items).filter(([k]) => k !== 'drum').map(([, v]) => v),
   ];
   for (const s of shortOnes) if (s.length > 20) problems.push(`20자 초과: ${s}`);
-  if (RECORD_CARDS.length !== 6 || new Set(RECORD_CARDS.map(r => r.id)).size !== 6) problems.push('기록 카드는 서로 다른 6장이어야 함');
+  if (new Set(RECORD_CARDS.map(r => r.id)).size !== RECORD_CARDS.length) problems.push('기록 카드 id가 겹침');
 
   console.table(rows);
   console.table(stageTimes);
@@ -1034,8 +1146,8 @@ function runControlTest() {
     }
   }
   // 앞 무게추는 조종해도 3단계 목표에 못 감, 작은 날개도 마찬가지
-  if (dist('big', 'bamboo', 'front', { angle: 30, power: 1, thermal: true, drums: DR }) >= STAGES[2].goal) problems.push('앞 무게추가 3단계 목표에 도달');
-  if (dist('small', 'bamboo', 'center', { angle: 30, power: 1, thermal: true, drums: DR }) >= STAGES[1].goal) problems.push('작은 날개가 2단계 목표에 도달');
+  if (dist('big', 'bamboo', 'front', { angle: 30, power: 1, thermal: true, drums: DR }) >= CHALLENGE_LEVELS[2].goal) problems.push('앞 무게추가 3단계 목표에 도달');
+  if (dist('small', 'bamboo', 'center', { angle: 30, power: 1, thermal: true, drums: DR }) >= CHALLENGE_LEVELS[1].goal) problems.push('작은 날개가 2단계 목표에 도달');
   // 조종 비중: 같은 설계에서 최고-최저 폭과 설계 간 폭 비교
   const worstCtl = dist('big', 'bamboo', 'center', { angle: 50, power: CONTROL.minPower });
   const designRange = auto - simulateFlight('small', 'wood', 'center').distance;
@@ -1123,7 +1235,7 @@ function saveSaved(key, value) { try { localStorage.setItem(key, JSON.stringify(
 
 // 단계 성공: 다음 단계를 연다. 새로 열렸으면 true
 function unlockNext(stageId) {
-  const next = Math.min(STAGES.length, stageId + 1);
+  const next = Math.min(CHALLENGE_LEVELS.length, stageId + 1);
   if (next <= progress.unlocked) return false;
   progress.unlocked = next;
   saveSaved(PROGRESS_KEY, progress);
@@ -1169,7 +1281,7 @@ const game = {
   mode: 'easy', parts: null, collect: null, stage: 1,
   tut: null, tutSeen: new Set(),
 };
-const currentStage = () => STAGES[game.stage - 1];
+const currentStage = () => CHALLENGE_LEVELS[game.stage - 1];
 
 // =============================================================
 // 효과음: Web Audio로 만든다(외부 파일 없음). 처음 누른 뒤에 켜진다
@@ -1705,11 +1817,16 @@ function drawPart(c, key, s, opt = {}) {
     c.beginPath(); c.moveTo(-44, -2); c.quadraticCurveTo(0, -18, 46, -4); c.stroke();
     c.lineCap = 'butt';
   } else if (key === 'weight') {
-    c.strokeStyle = C.ink; c.lineWidth = 5;
-    c.beginPath(); c.moveTo(0, -44); c.lineTo(0, -16); c.stroke();
-    c.beginPath(); c.moveTo(-34, 6); c.quadraticCurveTo(-36, -22, -6, -22); c.quadraticCurveTo(34, -24, 36, 8); c.quadraticCurveTo(38, 36, 2, 38); c.quadraticCurveTo(-34, 38, -34, 6); c.closePath();
-    fillStroke(c, C.stone, 5);
-    c.fillStyle = 'rgba(255,255,255,0.35)'; c.beginPath(); c.ellipse(-12, -6, 10, 6, -0.5, 0, Math.PI * 2); c.fill();
+    // 새끼줄로 묶은 납작한 돌
+    c.beginPath(); c.moveTo(-40, 14); c.quadraticCurveTo(-42, -14, -14, -20); c.quadraticCurveTo(20, -26, 40, -8); c.quadraticCurveTo(46, 22, 18, 30); c.quadraticCurveTo(-30, 36, -40, 14); c.closePath();
+    fillStroke(c, '#9b938a', 5);
+    c.fillStyle = '#b7afa5'; c.beginPath(); c.ellipse(-14, -6, 14, 6, -0.3, 0, Math.PI * 2); c.fill();
+    c.fillStyle = '#7b736b'; circle(c, 18, 12, 4); c.fill(); circle(c, -22, 18, 3); c.fill();
+    c.lineCap = 'round';
+    c.strokeStyle = C.ink; c.lineWidth = 11; c.beginPath(); c.moveTo(-6, -24); c.quadraticCurveTo(-2, 4, -8, 32); c.stroke();
+    c.strokeStyle = '#d9b46a'; c.lineWidth = 6; c.stroke();
+    c.strokeStyle = C.ink; c.lineWidth = 5; c.beginPath(); c.moveTo(-6, -24); c.lineTo(-6, -44); c.stroke();
+    c.lineCap = 'butt';
   } else if (key === 'rotor') {
     // 대나무 회전날개(대나무 잠자리)
     const a = opt.spin || 0, cos = Math.cos(a);
@@ -1953,6 +2070,50 @@ function renderGoal(c, topY, photo, goal) {
   label(c, `${goal}m`, gx + 16, GROUND_Y - 54);
 }
 
+// 스테이지 목표: 거리면 깃발, 높이면 점선
+function renderStageGoal(c, stage) {
+  if (!stage) return;
+  const g = stage.goal, T = STAGE_MODE_TEXT;
+  c.fillStyle = C.ink; c.font = '800 48px system-ui, sans-serif'; c.textBaseline = 'middle';
+  if (g.type === 'height') {
+    const y = py(g.value);
+    c.strokeStyle = C.orangeDark; c.lineWidth = 7; c.setLineDash([26, 18]);
+    c.beginPath(); c.moveTo(px(-8), y); c.lineTo(W, y); c.stroke();
+    c.setLineDash([]);
+    c.textAlign = 'right';
+    haloText(c, `${T.goalHeightLabel} ${g.value}m`, W - 24, y - 40);
+    return;
+  }
+  const gx = px(g.value);
+  c.fillStyle = C.ink; c.fillRect(gx - 4, GROUND_Y - 230, 8, 234);
+  c.beginPath(); c.moveTo(gx + 4, GROUND_Y - 230); c.lineTo(gx + 124, GROUND_Y - 192); c.lineTo(gx + 4, GROUND_Y - 154); c.closePath();
+  fillStroke(c, C.orange);
+  c.fillStyle = C.ink; c.textAlign = 'left';
+  haloText(c, T.goalFlag, gx + 16, GROUND_Y - 110);
+  haloText(c, `${g.value}m`, gx + 16, GROUND_Y - 54);
+}
+
+// 하늘의 별 상자(원점이 가운데). open = 지나감
+function drawStarBox(c, x, y, now, open) {
+  const bob = open ? 0 : Math.sin(now / 300) * 6;
+  c.save();
+  c.translate(x, y + bob);
+  roundBox(c, -40, -30, 80, 60, 10); fillStroke(c, open ? '#fff4c2' : '#c8553d', 5);
+  if (!open) { c.strokeStyle = '#8a2f1f'; c.lineWidth = 4; c.beginPath(); c.moveTo(-40, -6); c.lineTo(40, -6); c.stroke(); }
+  star5(c, 0, open ? -48 : 2, open ? 34 : 22, open ? '#f0b400' : '#ffd94a');
+  c.restore();
+}
+// 다섯 꼭짓점 별
+function star5(c, x, y, r, fill) {
+  c.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 5, q = i % 2 ? r * 0.45 : r;
+    c.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q);
+  }
+  c.closePath();
+  fillStroke(c, fill, 4);
+}
+
 // 도전 모드: 위에서 본 진주성 지도
 function renderCastleMap(c) {
   c.fillStyle = C.hill; c.fillRect(0, 0, W, H);
@@ -2152,6 +2313,7 @@ function setBg(kind) {
   if (kind === 'title' || kind === 'story') renderPhotoBg(bgCtx, kind);
   else if (kind === 'flight') renderLandscape(bgCtx, true);
   else if (kind.startsWith('flightC')) renderLandscape(bgCtx, true, Number(kind.slice(7)));
+  else if (kind.startsWith('stage')) { renderLandscape(bgCtx, true); renderStageGoal(bgCtx, STAGES[Number(kind.slice(5)) - 1]); }
   else if (kind === 'castle') renderCastleMap(bgCtx);
   else if (kind === 'build') {
     bgCtx.fillStyle = C.sky; bgCtx.fillRect(0, 0, W, H);
@@ -2230,7 +2392,7 @@ function switchMode(mode) {
   game.pick = { ...CONFIG.defaults };
   game.grid = null; game.buildRules = null; game.stageDef = null; game.autoLaunch = false;
   game.isRetry = false;
-  go('build');
+  go('stagePick');
 }
 
 // 새 손님을 위해 판 기록과 선택을 비운다
@@ -2341,13 +2503,16 @@ screens.title = {
       grid.append(b);
     };
     choose(S.adminAuto, null);
-    STAGES.forEach(st => choose(S.adminFixed.replace('{name}', st.name), st.id));
+    CHALLENGE_LEVELS.forEach(st => choose(S.adminFixed.replace('{name}', st.name), st.id));
     grid.append(button('', S.adminReset, () => {
-      progress.unlocked = 1; progress.fixed = null; saveSaved(PROGRESS_KEY, progress);
+      progress.unlocked = 1; progress.fixed = null; progress.allStages = false; saveSaved(PROGRESS_KEY, progress);
+      try { localStorage.removeItem(STAR_KEY); } catch (e) { /* 무시 */ }
+      memoryStars = {};
       try { localStorage.removeItem(RECORD_KEY); } catch (e) { /* 무시 */ }
       memoryRecords = [];
       go('title');
     }, 'retry'));
+    grid.append(button(progress.allStages ? 'primary' : '', STAGE_MODE_TEXT.allOpen, () => { progress.allStages = !progress.allStages; saveSaved(PROGRESS_KEY, progress); back.remove(); }, progress.allStages ? 'check' : 'star'));
     grid.append(button('', S.adminClose, () => back.remove(), 'cross'));
     box.append(grid);
     back.append(box);
@@ -2370,7 +2535,7 @@ screens.stages = {
     const S = STAGE_TEXT;
     ui.append(el('h2', 'abs stages-title', S.title));
     const row = el('div', 'stage-row');
-    for (const st of STAGES) {
+    for (const st of CHALLENGE_LEVELS) {
       const locked = st.id > progress.unlocked;
       const card = el('button', 'stage-card' + (locked ? ' locked' : ''));
       card.type = 'button';
@@ -2419,8 +2584,88 @@ function storyDialog(scr, lines, lastLabel, onDone) {
 function drawStoryHamo(lines, line) { drawHamo(ctx, lines[line].hamo, 245, 790, 440, 500); }
 
 screens.story = {
-  enter() { storyDialog(this, STORY.lines, TEXT.storyNext, () => go('build')); },
+  enter() { storyDialog(this, STORY.lines, TEXT.storyNext, () => go('stagePick')); },
   draw() { drawBg(); drawStoryHamo(STORY.lines, this.line); },
+};
+
+// ----- stagePick: 스테이지 고르기 -----
+function startStage(id) {
+  const stage = STAGES[id - 1];
+  game.mode = 'easy';
+  game.stageDef = stage;
+  game.buildRules = rulesFromStage(stage);
+  game.grid = null;
+  game.isRetry = false;
+  game.history = [];
+  game.autoLaunch = !settings.easyControl; // 타이틀에서 '자동 발사'를 고르면 당기지 않아도 날아감
+  go('stageIntro');
+}
+function stageGoalText(stage) {
+  const T = STAGE_MODE_TEXT;
+  return (stage.goal.type === 'height' ? T.goalHeight : T.goalDistance).replace('{goal}', stage.goal.value);
+}
+function starLabel(cond) { return STAGE_MODE_TEXT.star[cond.type].replace('{n}', cond.value); }
+
+screens.stagePick = {
+  enter() {
+    setBg('paper');
+    const T = STAGE_MODE_TEXT, all = loadStars();
+    ui.append(el('h2', 'abs stages-title', T.pickTitle));
+    const row = el('div', 'stage-row sp-row');
+    for (const st of STAGES) {
+      const open = stageUnlocked(st.id);
+      const card = el('button', 'stage-card sp-card' + (open ? '' : ' locked'));
+      card.type = 'button';
+      card.disabled = !open;
+      card.dataset.stage = st.id;
+      card.append(el('span', 'sp-num', String(st.id)), el('span', 'stage-name sp-name', st.name));
+      // 이 스테이지에서 새로 나오는 부품 그림
+      const pic = el('canvas', 'sp-pic');
+      pic.width = 220; pic.height = 130;
+      const c = pic.getContext('2d'), n = st.newParts.length;
+      st.newParts.forEach((k, i) => { c.save(); c.translate(110 + (i - (n - 1) / 2) * 105, 65); drawPart(c, k, n > 1 ? 100 : 124, { spin: 0.5 }); c.restore(); });
+      card.append(pic, el('span', 'stage-goal', stageGoalText(st)));
+      const stars = el('span', 'sp-stars'), got = all[st.id] || [];
+      for (let i = 0; i < 3; i++) stars.append(el('span', 'sp-star' + (got[i] ? ' on' : ''), '★'));
+      card.append(stars);
+      if (!open) {
+        const lock = el('span', 'stage-lock');
+        lock.append(icon('lock'), el('span', '', T.locked));
+        card.append(lock);
+      } else card.addEventListener('click', () => { sfx.play('tap'); startStage(st.id); });
+      row.append(card);
+    }
+    ui.append(row);
+  },
+  draw() { drawBg(); },
+};
+
+// ----- stageIntro: 스테이지 소개와 새 부품 소개(한 문장씩, 그림과 함께) -----
+screens.stageIntro = {
+  enter() {
+    const st = game.stageDef;
+    this.lines = [{ hamo: 'build', text: st.intro }];
+    for (const k of st.newParts) {
+      if (game.tutSeen.has('part:' + k)) continue;
+      game.tutSeen.add('part:' + k);
+      this.lines.push({ hamo: 'storyShape', text: PARTS[k].intro, part: k });
+    }
+    storyDialog(this, this.lines, STAGE_MODE_TEXT.start, () => go('build'));
+    ui.append(el('div', 'sheet abs intro-goal', `${st.id}. ${st.title}`));
+  },
+  draw(now) {
+    drawBg();
+    drawStoryHamo(this.lines, this.line);
+    const line = this.lines[this.line];
+    // 부품 소개는 큰 부품 그림, 첫 줄은 추천 조립 모습
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,249,236,0.85)';
+    roundBox(ctx, 1240, 130, 620, 350, 40); fillStroke(ctx, 'rgba(255,249,236,0.9)', 5);
+    if (line.part) { ctx.translate(1550, 305); drawPart(ctx, line.part, 260, { spin: now / 200, wave: now / 160, blow: true, blowT: now / 250 }); }
+    else drawCraft(ctx, gridFromRows(game.stageDef.recommend), 1550, 305, 80, 0, { wave: now / 160 });
+    ctx.restore();
+  },
+  animated: true,
 };
 
 // ----- records: 비거 기록 도감 -----
@@ -2843,6 +3088,7 @@ screens.flight = {
     this.blowHeld = false; this.blowId = null; this.blowKey = false;
     this.acc = 0; this.last = 0; this.landedAt = 0; this.spinA = 0; this.pops = [];
     this.pauseAt = 0;
+    this.boxOpen = false; this.boxAt = 0; this.prevPos = null;
     this.aim = { angle: K.startAngle, power: K.startPower, active: false, dragging: false, pull: 0, previewKey: '', preview: [], pointerId: null };
     this.aimStart = performance.now();
     if (game.autoLaunch) { this.launch(CRAFT_FLIGHT.autoAngle, 1, true); return; }
@@ -3006,8 +3252,8 @@ screens.flight = {
   // 회전날개 남은 두드리기(위쪽 가운데)
   drawTaps(now) {
     const st = this.st, n = this.info.taps;
-    if (!n) return;
     for (let i = 0; i < n; i++) {
+      if (!st) break;
       ctx.save();
       ctx.translate(960 + (i - (n - 1) / 2) * 70, 70);
       if (i >= st.tapsLeft) ctx.globalAlpha = 0.3;
@@ -3023,8 +3269,29 @@ screens.flight = {
       const k = (now - q.at) / 700;
       ctx.save(); ctx.globalAlpha = 1 - k; ctx.fillStyle = C.orangeDark;
       ctx.font = '900 84px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      haloText(ctx, CONTROL_TEXT.drumPop, q.x, q.y - k * 70);
+      haloText(ctx, q.text || CONTROL_TEXT.drumPop, q.x, q.y - k * 70);
       ctx.restore();
+    }
+  },
+  // 하늘의 별 상자: 지나가면 열리고 반짝
+  drawBox(now) {
+    const box = this.stage && this.stage.box;
+    if (!box) return;
+    const st = this.st;
+    if (st && !this.boxOpen) {
+      const cur = { x: st.x, y: st.y };
+      if (this.prevPos && boxPassed(box, [this.prevPos, cur])) {
+        this.boxOpen = true; this.boxAt = now;
+        sfx.play('good');
+        this.pops.push({ x: px(box.x), y: py(box.y) - 60, at: now, text: FLIGHT_TEXT.starBox });
+      }
+      this.prevPos = cur;
+    }
+    drawStarBox(ctx, px(box.x), py(box.y), now, this.boxOpen);
+    if (this.boxOpen && now - this.boxAt < 600) {
+      const k = (now - this.boxAt) / 600;
+      ctx.save(); ctx.globalAlpha = 1 - k; ctx.strokeStyle = '#f0b400'; ctx.lineWidth = 8;
+      circle(ctx, px(box.x), py(box.y), 40 + k * 90); ctx.stroke(); ctx.restore();
     }
   },
   drawTrail() {
@@ -3059,7 +3326,7 @@ screens.flight = {
   draw(now) {
     if (game.tut && this.pauseAt) now = this.pauseAt;
     drawBg();
-    if (this.phase === 'aim') { this.drawAim(now); this.drawReadout(0); return; }
+    if (this.phase === 'aim') { this.drawBox(now); this.drawAim(now); this.drawReadout(0); return; }
     this.advance(now);
     const st = this.st;
     if (now < this.flyFrom) {
@@ -3068,6 +3335,7 @@ screens.flight = {
       ctx.fillText(TEXT.go, 960, 280);
     }
     this.drawTrail();
+    this.drawBox(now);
     let y = py(st.y), pitch = st.theta;
     if (this.landedAt) {
       const age = now - this.landedAt;
@@ -3515,6 +3783,7 @@ screens.result = {
     this.success = game.mode === 'challenge' && isChallengeSuccess(fl, currentStage());
     sfx.play(this.success || fl.grade === 'best' ? 'win' : 'empty');
     if (game.mode === 'challenge') { this.enterChallenge(fl); return; }
+    if (game.stageDef) { this.enterStage(fl); return; }
 
     ui.append(el('div', 'abs grade ' + fl.grade, GRADE_TEXT[fl.grade]));
     const dist = el('div', 'abs distance', String(fl.distance));
@@ -3531,6 +3800,53 @@ screens.result = {
     ui.append(button('primary result-retry', TEXT.retry, () => { game.isRetry = true; go('build'); }, 'retry'));
     ui.append(button('result-quiz', TEXT.toQuiz, () => go('quiz'), 'quiz'));
     ui.append(button('result-other', TEXT.tryChallenge, () => switchMode('challenge'), 'star'));
+    ui.append(el('p', 'abs result-note', TEXT.resultNote));
+  },
+  // 스테이지 결과: 성공·목표, 별 3개, 하모 설명, 다시 조립/다음 스테이지/퀴즈
+  enterStage(fl) {
+    const st = game.stageDef, T = STAGE_MODE_TEXT, R = game.buildRules;
+    const out = stageOutcome(st, analyzeCraft(game.grid), fl, R);
+    const nextOpenBefore = st.id < STAGES.length && stageUnlocked(st.id + 1);
+    const saved = saveStageStars(st.id, out.stars);
+    const opened = out.ok && st.id < STAGES.length && !nextOpenBefore;
+    this.success = out.ok;
+    this.hamoKey = out.ok ? 'best' : fl.crashed ? 'crash' : fl.grade;
+    sfx.play(out.ok ? 'win' : 'empty');
+    ui.className = 'result-stage';
+    ui.append(el('div', 'abs grade ' + (out.ok ? 'best' : fl.grade), out.ok ? T.success : GRADE_TEXT[fl.grade]));
+    const height = st.goal.type === 'height';
+    const big = el('div', 'abs distance', String(height ? fl.maxHeight : fl.distance));
+    big.append(el('small', '', 'm'));
+    ui.append(big);
+    const left = Math.max(0, st.goal.value - (height ? fl.maxHeight : fl.distance));
+    const goalText = out.ok
+      ? (height ? T.reachedHeight : T.reachedDistance).replace('{goal}', st.goal.value)
+      : (height ? T.leftHeight : T.leftDistance).replace('{n}', left || 1);
+    ui.append(el('div', 'abs goal-line', goalText));
+
+    // 별 3개(새로 얻은 별은 반짝)
+    const panel = el('div', 'sheet abs star-panel');
+    panel.append(el('h2', '', `${st.id}. ${st.title}`));
+    const row = el('div', 'star-row');
+    st.stars.forEach((cond, i) => {
+      const cell = el('div', 'star-cell' + (out.stars[i] ? ' on' : '') + (saved.fresh[i] ? ' fresh' : '') + (!out.stars[i] && saved.merged[i] ? ' before' : ''));
+      cell.append(el('span', 'big-star', '★'), el('span', 'star-text', starLabel(cond)));
+      row.append(cell);
+    });
+    panel.append(row);
+    ui.append(panel);
+
+    const bubble = el('div', 'bubble challenge-bubble' + (out.ok ? ' ok' : ''));
+    bubble.append(el('p', '', FEEDBACK[fl.feedback]));
+    if (saved.merged.every(Boolean) && saved.fresh.some(Boolean)) bubble.append(el('p', 'cheer', T.allStars));
+    else if (opened) bubble.append(el('p', 'cheer', T.opened));
+    else if (saved.fresh.some(Boolean)) bubble.append(el('p', 'cheer', T.newStar));
+    ui.append(bubble);
+    this.addControlLine(fl);
+    ui.append(button('primary c-retry', T.rebuild, () => { game.isRetry = true; go('build'); }, 'retry'));
+    ui.append(button('c-quiz', TEXT.toQuiz, () => go('quiz'), 'quiz'));
+    if (out.ok && st.id < STAGES.length) ui.append(button('primary c-other', T.next, () => startStage(st.id + 1), 'next'));
+    else ui.append(button('c-other', T.pick, () => go('stagePick'), 'star'));
     ui.append(el('p', 'abs result-note', TEXT.resultNote));
   },
   // 조종했으면 "발사 각도 32° · 두드리기 2번"
@@ -3561,7 +3877,7 @@ screens.result = {
       bubble.append(el('p', '', S.success));
       if (ctlKey) bubble.append(el('p', 'cheer', CONTROL_TEXT[ctlKey]));
       else if (fl.grade === 'best') bubble.append(el('p', 'cheer', TEXT.bestExtra));
-      if (opened) bubble.append(el('p', 'cheer', STAGE_TEXT.opened.replace('{name}', STAGES[stage.id].name)));
+      if (opened) bubble.append(el('p', 'cheer', STAGE_TEXT.opened.replace('{name}', CHALLENGE_LEVELS[stage.id].name)));
     } else {
       bubble.append(el('p', '', FEEDBACK[fl.feedback]));
       if (designKey) bubble.append(el('p', 'extra', CHALLENGE_FEEDBACK[designKey]));
@@ -3572,7 +3888,7 @@ screens.result = {
     this.addControlLine(fl);
     ui.append(button('primary c-retry', S.retryFull, () => go('collect'), 'retry'));
     ui.append(button('c-quiz', TEXT.toQuiz, () => go('quiz'), 'quiz'));
-    if (ok && stage.id < STAGES.length && !progress.fixed) {
+    if (ok && stage.id < CHALLENGE_LEVELS.length && !progress.fixed) {
       ui.append(button('primary c-other', STAGE_TEXT.next, () => { game.stage = stage.id + 1; game.history = []; go('collect'); }, 'next'));
     } else {
       ui.append(button('c-other', TEXT.tryEasy, () => switchMode('easy'), 'plane'));
@@ -3585,6 +3901,7 @@ screens.result = {
       drawHamo(ctx, this.success ? 'challengeSuccess' : game.flight.grade, 150, 715, 220, 270);
       return;
     }
+    if (game.stageDef) { drawHamo(ctx, this.hamoKey, 150, 715, 220, 270); return; }
     drawHamo(ctx, game.flight.grade, 150, 640, 230, 300);
   },
 };

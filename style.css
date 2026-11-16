@@ -692,3 +692,30 @@ html, body {
 .cb-fly svg { margin-right: 0; width: 1.6em; height: 1.6em; }
 .cb-fly { font-size: 1.55rem; padding: 0.2rem 0.3rem; }
 .cb-fly svg { width: 1.3em; height: 1.3em; }
+
+/* ----- 스테이지 고르기·소개·결과 ----- */
+.sp-row { grid-template-columns: repeat(5, 1fr); gap: 0.45rem; }
+.sp-card { padding: 0.5rem 0.3rem; gap: 0.25rem; }
+.sp-num { width: 2.4rem; height: 2.4rem; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--orange); color: #fff; font-size: 1.5rem; font-weight: 900; border: 0.12rem solid var(--ink); }
+.sp-card .sp-name { font-size: 1.45rem; line-height: 1.2; text-align: center; min-height: 3.5rem; display: flex; align-items: center; }
+.sp-pic { width: 7.5rem; height: 4.4rem; }
+.sp-card .stage-goal { font-size: 1.3rem; }
+.sp-stars { display: flex; gap: 0.1rem; font-size: 2rem; line-height: 1; }
+.sp-star { color: #d9d3c4; -webkit-text-stroke: 0.06rem var(--ink); }
+.sp-star.on { color: #f0b400; }
+.intro-goal { left: 12.4rem; top: 1rem; width: 16rem; padding: 0.4rem 0.6rem; font-size: 1.35rem; font-weight: 900; text-align: center; line-height: 1.3; }
+.result-stage .grade { line-height: 1.1; }
+.result-stage .distance { font-size: 5.2rem; top: 3.7rem; line-height: 1.15; }
+.result-stage .distance small { font-size: 2.6rem; }
+.result-stage .control-line { left: 1.2rem; top: 11.6rem; width: 20rem; text-align: left; }
+.star-panel { left: 21.6rem; top: 0.6rem; width: 25.2rem; height: 12.2rem; padding: 0.5rem 0.8rem; }
+.star-panel h2 { font-size: 1.4rem; font-weight: 800; line-height: 1.2; }
+.star-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; margin-top: 0.4rem; }
+.star-cell { display: flex; flex-direction: column; align-items: center; gap: 0.1rem; }
+.big-star { font-size: 4.4rem; line-height: 1; color: #e3ddcd; -webkit-text-stroke: 0.1rem var(--ink); }
+.star-cell.before .big-star { color: #f5dc8a; }
+.star-cell.on .big-star { color: #f0b400; }
+.star-cell.fresh .big-star { animation: star-pop 0.6s ease-out 2; }
+@keyframes star-pop { 50% { transform: scale(1.3) rotate(10deg); } }
+.star-text { font-size: 1.2rem; font-weight: 800; text-align: center; line-height: 1.2; }
+.sp-card .stage-lock span { display: none; }
