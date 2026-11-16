@@ -378,7 +378,7 @@ const TEXT = {
   river: '남강',
   castle: '진주성',
   rulerUnit: '거리(m)',
-  goalFlag: '아군 진영',
+  goalFlag: '성 밖 마을',
   tryChallenge: '도전 모드 해보기',
   tryEasy: '비거 만들기로 연습',
 };
